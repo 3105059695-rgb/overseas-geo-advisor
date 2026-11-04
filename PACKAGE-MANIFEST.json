@@ -1,0 +1,29 @@
+{
+  "name": "overseas-geo-advisor",
+  "version": "0.1.0",
+  "contains_private_full_corpus": false,
+  "remote_service_deployed": false,
+  "public_repository": "https://github.com/3105059695-rgb/overseas-geo-advisor",
+  "files_sha256": {
+    ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
+    ".gitignore": "5a43803e48a3802db15e915c7397a7dcbd980d92fce504840a002117bb36ce09",
+    "agents/openai.yaml": "846e408f67dbb8d93162396356a30a9943651435d7c16ae7b4e6ae7bac456e89",
+    "assets/curated.json": "3aae7a6eb093c6fe9fc8863ef9b342985f7d018ac049cfc2eea1e2903d70451f",
+    "README.md": "ddd988d8a292dbbacf9a78bbe56d375a9066e37756bac3df9f758876dfdad1e6",
+    "references/answer-samples.md": "8a64e3dc89c289b737d39dc358a6fcf8725442154972d4ffa8377e5344e4afeb",
+    "references/connection.md": "04a0cfb2e535f1800fd3d730ab515ab635fdf92b5020d81d3b2f61301941cf84",
+    "references/coverage.md": "756b3221ac22269cbc87009c0c50569572171417679e1b4bccf94f948853e3e2",
+    "references/evaluation.md": "3920ecc16a864f92b6344712cbb7037581469b79348aa00604c469eb7e29c89d",
+    "references/evidence-policy.md": "b84c13eca79518a9ca7eb512525eca9cf942e348e00113ae4cb96782fc6bfaed",
+    "references/runtime-contract.md": "c02dc7510a8562e4b2bdd97b582d2b1b3ad8eba8a3c2355cd65c530c7633490b",
+    "requirements-mcp.txt": "feff1eb1f8fbbbc2a3fd0138e21d1dff2e22de8c6535fa5b8842a3e8aca4adc4",
+    "scripts/geo.py": "c1d4ae9e15f70b92674b98d203efe186f4b43fe0339b79bac8baece0219fc7f0",
+    "scripts/geo_kb.py": "bb8598db727c008827d305185db47a818d883fdfc759ef591e07cf6a3e20adcc",
+    "scripts/geo_mcp.py": "9648061661d65254a5ac3b41052c2b8229ce168ba1159ace1998aee9c7252211",
+    "SKILL.md": "143fcf767db25a18c26d168005fa681c3f3e14cba6dd5ff4dc2738b3fb672e28",
+    "tests/development_questions.json": "4602d74ce1f2eaeb8a826f71284aeb425af383165b9fe3baebf75cc12993f6cd",
+    "tests/test_entry.py": "18a17879fda4677955632b1628eac6d86b87db7a0915abd5a1bef91df33c52dd",
+    "tests/test_geo_kb.py": "22a1d1c79638edd21a15996ba95b2634952dc98716a244a35d1f09380f76f9de",
+    "tests/test_geo_mcp.py": "526d99f1e7380ef572881df052f625c802d478d9d26f5d7d5b72f23092ccfcfe"
+  }
+}

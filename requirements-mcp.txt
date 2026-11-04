@@ -1,0 +1,3 @@
+# Optional: only the stdio MCP server and its integration tests need this SDK.
+# Core local indexing/search uses Python 3.11+ standard library.
+mcp==1.26.0
