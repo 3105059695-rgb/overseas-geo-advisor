@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
+import sqlite3
+from contextlib import closing
 
 MODULE = Path(__file__).resolve().parents[1] / "scripts" / "geo_kb.py"
+sys.path.insert(0, str(MODULE.parent))
 spec = importlib.util.spec_from_file_location("geo_kb", MODULE)
 geo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(geo)
@@ -180,6 +184,90 @@ class GeoKBTests(unittest.TestCase):
         self.assertEqual(geo._canonical_url("https://x.com/test/status/123?s=46"), "https://x.com/test/status/123")
         no_header = geo._metadata("# Test\n我看到来源：https://example.com/unrelated\n## 正文\n原文：https://example.com/other\n", "x.md")
         self.assertIsNone(no_header["original_url"])
+
+    def test_metadata_header_variants_preserve_date_roles(self):
+        text = "---\nsource: https://example.org/paper\nsource_version: 2026-10-30\n---\n# 论文\n- **原帖发布时间**：2026 年 10 月 23 日 06:11（北京时间；UTC 为 10 月 22 日 22:11）\n- 更新日期：2026-10-31\n- 采样日期：2026-10-29\n- 收录日期：2026-11-05\n- 作者：[Alice](https://example.org/alice)\n\n## 正文\n发布时间：2027-01-01\n"
+        meta = geo._metadata(text, "paper.md")
+        self.assertEqual(meta["original_url"], "https://example.org/paper")
+        self.assertEqual(meta["published_at"], "2026-10-23")
+        self.assertEqual(meta["author"], "Alice")
+        self.assertIn("UTC 为 10 月 22 日", meta["metadata_provenance"]["published_at"]["raw"])
+        self.assertEqual({x["kind"] for x in meta["source_dates"]}, {"published", "source_version", "updated", "sampled", "collected"})
+        self.assertEqual(meta["collected_at"], "2026-11-05")
+        for label in ["原帖", "原帖链接", "原论文", "原视频", "原视频链接", "Source"]:
+            self.assertEqual(geo._metadata(f"# 标题\n{label}: https://example.org/original\n", "a.md")["original_url"], "https://example.org/original")
+        inline = geo._metadata("# 帖子\n**社区：** SEO | **发布时间：** 2026-01-02\n", "a.md")
+        self.assertEqual(inline["published_at"], "2026-01-02")
+        unknown = geo._metadata("# 论文\n发布时间：2025\nsource_version: 2026-11-01\n收录日期：2026-11-05\n", "a.md")
+        self.assertIsNone(unknown["published_at"])
+        self.assertEqual(unknown["source_dates"][0]["date_precision"], "year")
+
+    def test_rebuild_repairs_metadata_without_changing_text_version(self):
+        self.kb.build(self.vault)
+        with closing(sqlite3.connect(self.kb.db_path)) as connection:
+            did, version, metadata = connection.execute("SELECT document_id,source_version,meta_json FROM versions").fetchone()
+            stale = json.loads(metadata)
+            stale["original_url"] = None
+            connection.execute("UPDATE versions SET meta_json=?", (json.dumps(stale),))
+            connection.commit()
+        result = self.kb.build(self.vault)
+        self.assertEqual(result["new_versions"], 0)
+        read = self.kb.read_source(did, version)
+        self.assertEqual(read["original_url"], "https://example.org/source?x=1")
+
+    def test_navigation_record_is_archived_but_not_retrieved(self):
+        path = self.vault / "01_检索范围与收录说明.md"
+        path.write_text("# 检索与收录说明\n\n独有导航测试词导航测试词。", encoding="utf-8")
+        result = self.kb.build(self.vault)
+        self.assertEqual(result["indexed"], 2)
+        self.assertEqual(self.kb.search("独有导航测试词")["citations"], [])
+        with closing(sqlite3.connect(self.kb.db_path)) as connection:
+            did, version = connection.execute("SELECT document_id,current_version FROM documents WHERE relative_path=?", (path.name,)).fetchone()
+        self.assertEqual(self.kb.read_source(did, version)["allowed_uses"], ["navigation"])
+        with self.assertRaisesRegex(ValueError, "导航"):
+            self.kb.review_claim(did, version, "导航记录", "独有导航测试词导航测试词。", "attributed_report", [], "已阅读")
+
+    def test_reconcile_discovers_sources_and_reports_uncertain_files(self):
+        from reconcile_sources import reconcile, registered_paths
+        folder = self.vault / "04_监测效果"
+        folder.mkdir()
+        (folder / "new.md").write_text("# 新资料\n原帖：https://x.com/user/status/123\n发布时间：2026-11-05\n正文", "utf-8")
+        (folder / "unknown.md").write_text("# 待分类\n正文", "utf-8")
+        (folder / "._sync.md").write_text("# 同步副本\n原帖：https://x.com/user/status/123", "utf-8")
+        (folder / "详细教学样章01.md").write_text("# 旧样章", "utf-8")
+        manifest = self.root / "mapping.json"
+        original = json.dumps({"pages": [{"items": [{"source_path": "source.md"}]}]})
+        manifest.write_text(original, "utf-8")
+        derived, report = reconcile(self.vault, manifest)
+        self.assertEqual(report["counts"]["added_sources"], 1)
+        self.assertEqual(report["counts"]["candidates"], 1)
+        self.assertIn("04_监测效果/new.md", registered_paths(derived))
+        self.assertEqual(manifest.read_text("utf-8"), original)
+
+    def test_new_source_mapping_uses_directory_names_and_preserves_registered_entries(self):
+        from reconcile_sources import infer_new_source_mapping, reconcile
+        examples = {
+            "04_监测效果/01_引用监测与效果分析/audit.md": {"group": "05", "topic": "可见度审计"},
+            "04_监测效果/02_研究与案例/case.md": {"group": "06", "topic": "品牌增长"},
+            "05_全流程与基础/01_入门与综合指南/roadmap.md": {"group": "01", "topic": "完整实操流程"},
+            "05_全流程与基础/01_入门与综合指南/nine-steps.md": {"group": "01", "topic": "完整实操流程"},
+        }
+        for relative, expected in examples.items():
+            with self.subTest(relative=relative):
+                self.assertEqual(infer_new_source_mapping(relative), expected)
+                self.assertEqual(infer_new_source_mapping("88_" + relative[3:]), expected)
+                path = self.vault / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("# 新资料\n原帖：https://example.org/source\n正文", "utf-8")
+        self.assertIsNone(infer_new_source_mapping("05_未知目录/new.md"))
+        original_page = {"group": "04", "title": "已有分类保持", "items": [{"source_path": "source.md"}]}
+        manifest = self.root / "mapping.json"
+        manifest.write_text(json.dumps({"pages": [original_page]}), "utf-8")
+        derived, report = reconcile(self.vault, manifest)
+        self.assertEqual(derived["pages"][0], original_page)
+        self.assertEqual(report["counts"]["added_sources"], 4)
+        actual = {p["items"][0]["source_path"]: {"group": p["group"], "topic": p["title"]} for p in derived["pages"][1:]}
+        self.assertEqual(actual, examples)
 
     def test_real_historical_alias_and_formula_definition_use_matrix(self):
         production = json.loads((MODULE.parent.parent / "assets" / "curated.json").read_text(encoding="utf-8"))

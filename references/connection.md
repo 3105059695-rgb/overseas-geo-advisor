@@ -1,6 +1,6 @@
 # 安装与使用：直接查询 GitHub 知识快照
 
-当前 Skill 为 **v0.5.1**，沿用 v0.5.0 检索引擎。普通用户安装后直接提问，检索与答题规则已内置；不注册知识库账号、不填 API Key、不导入资料、不运行 `setup`，默认不配置或调用 MCP。发布与实测结果以 README 的发布记录为准。
+当前 Skill 与检索引擎均为 **v0.5.2**。普通用户安装后直接提问，检索与答题规则已内置；不注册知识库账号、不填 API Key、不导入资料、不运行 `setup`，默认不配置或调用 MCP。发布与实测结果以 README 的发布记录为准。
 
 ## 客户端需要什么
 
@@ -13,7 +13,7 @@
 用户给出仓库地址并要求安装，就执行以下步骤，不要求用户补一段长提示词。
 
 1. 检查客户端的实际 Skill 安装方式、脚本和网络能力，复用现有 Python 3.11+。不能安装或不能执行时明确缺项，不把只读 GitHub 页面说成安装完成，也不反复让用户配置 MCP。
-2. 从 `https://github.com/3105059695-rgb/overseas-geo-advisor` 获取 Skill 主分支/正式版本的完整文件夹，保留 scripts、references、assets 和 agents；不只下载 SKILL.md，不克隆 knowledge-snapshot 数据分支。已有目录先确认来源和本地修改，再正常更新。
+2. 从 `https://github.com/3105059695-rgb/overseas-geo-advisor` 获取用户指定正式版本（当前为 v0.5.2）或主分支的完整文件夹，保留 scripts、references、assets 和 agents；不只下载 SKILL.md，不克隆 knowledge-snapshot 数据分支。已有目录先确认来源和本地修改，再正常更新。核对实际安装目录的 PACKAGE-MANIFEST.json 与 SKILL.md 版本及文件哈希；GitHub页面已更新不能替代本机安装核对。
 3. 实际读取已安装的 SKILL.md，以及它指定的 answer-guide.md、evidence-policy.md、workflow-v0.5.md。后续回答按这些文件执行，不让用户替你转述规则。不修改用户的无关全局提示词、其他技能或 MCP 设置。
 4. 运行 `python -B -X utf8 "<skill>/scripts/geo.py" status` 确认资料入口，再做一次小范围的真实查询与回读。可在本次任务的可写目录创建分析文件：
 
@@ -21,7 +21,7 @@
    {"resolved_question":"海外 GEO 信源按品牌关系怎么分类？","queries":["海外 GEO 信源分类 自有 第三方 社区"],"keywords":["信源分类","品牌官网","第三方","社区"]}
    ```
 
-   执行 `python -B -X utf8 "<skill>/scripts/geo.py" workflow prepare --question "海外 GEO 信源按品牌关系怎么分类？" --analysis-file <分析.json> --output <证据包.json>`。检查实际通道、非空 candidates、原文 read_status 与 excerpt，阅读至少一段实际返回原文。状态列表的资料数量不等于查询回读通过。失败就报告具体状态，不跳过校验或伪称成功。
+   执行 `python -B -X utf8 "<skill>/scripts/geo.py" workflow prepare --question "海外 GEO 信源按品牌关系怎么分类？" --analysis-file <分析.json> --output <证据包.json>`。检查实际通道、非空 candidates、原文 read_status 与 excerpt，阅读至少一段真正说明品牌关系分类的原文。只返回标题、前言或目录时，按[段落定位](retrieval-v0.5.2.md)在同文档内补查。状态列表的资料数量不等于查询回读通过。失败就报告具体状态，不跳过校验或伪称成功。
 5. 只有安装请求时，简短说明安装版本、是否已检索回读、是否需要重开对话，以及“现在可以直接提问”。这不是完成了业务问题的事实核查。安装时用户同时给出问题，接着按完整工作流回答该问题，无须再提问确认。
 
 安装步骤不额外下载运行时、模型或整库。若缺少依赖，说明需要什么；不得把安装 Skill 理解为开通付费接口或发布外部内容。
@@ -62,6 +62,8 @@ python -B -X utf8 "<skill>/scripts/geo.py" read --document-id <真实ID> --sourc
 ID、版本、行号必须来自本次真实检索。默认通过 HTTPS GET 按需读取公开 catalog、索引分片和所需原文，固定到随版本指定的数据 commit，并按清单校验文件与正文哈希。每个数据版本缓存上限 **32 MiB**；不克隆完整 `knowledge-snapshot` 分支、不下载整库或模型。
 
 每次旧接口原文读取最多 400 行或 30,000 字符；有 `next_start_line` 时继续补读必要上下文。JSON 文件自身显示行号不是归档正文行号，应以返回的正文 `line_start`、`line_end` 为准。来源读取失败不能静默替换为新版本。
+
+指定资料内的搜索可传 `search --question <所问内容> --document-id <真实ID> --source-version <真实版本>`；正式回答的分析文件可用 source_scope 限定同一版本。公开图片/PDF通过 attachments 返回的链接按需打开，安装及文字检索不会自动下载全部附件。
 
 查询成功不等于原文已读，原文已读也不等于能支持某个结论。状态里的资料数量不是阅读证据。默认工作流以 `retrieval_trace` 报告真实查询、回读和可用路线，不能声称 MCP 已连接。
 

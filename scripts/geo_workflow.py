@@ -24,11 +24,15 @@ def engine(config: dict | None = None) -> WorkflowEngine:
     if config.get("lexical_db"):
         from geo_ingest import LexicalIndex
         index = LexicalIndex(config["lexical_db"])
-        search, reader = index.search, index.read
+        def search(query, limit=20, **scope):
+            if scope:
+                raise ValueError("本地索引尚不支持版本限定补查；请使用默认 GitHub 资料入口")
+            return index.search(query, limit=limit)
+        reader = index.read
     else:
         from geo_snapshot import SnapshotClient
         client = SnapshotClient(cache_dir=config.get("cache_dir"))
-        search = lambda query, limit=20: client.call("search_geo", {"question": query, "limit": limit})
+        search = lambda query, limit=20, **scope: client.call("search_geo", {"question": query, "limit": limit, **scope})
         reader = lambda document_id, source_version, start_line, end_line: client.call("read_geo_source", {"document_id": document_id, "source_version": source_version, "start_line": start_line, "end_line": end_line})
         provenance = client.transport_report
     vector = None

@@ -260,6 +260,11 @@ def make_parser() -> argparse.ArgumentParser:
         sub.add_argument("--as-of")
         if name == "search":
             sub.add_argument("--limit", type=int, default=10)
+            sub.add_argument("--document-id", help="在指定资料及版本的真实正文中检索")
+            sub.add_argument("--source-version")
+            sub.add_argument("--start-line", type=int)
+            sub.add_argument("--end-line", type=int)
+            sub.add_argument("--offset", type=int)
         else:
             context = sub.add_mutually_exclusive_group()
             context.add_argument("--context-file")
@@ -295,6 +300,13 @@ def execute(args: argparse.Namespace) -> dict:
         if not 1 <= args.limit <= 20:
             raise ValueError("远程检索 limit 必须在 1 至 20 之间。")
         values["limit"] = args.limit
+        if bool(args.document_id) != bool(args.source_version):
+            raise ValueError("限定检索须同时提供 --document-id 和 --source-version。")
+        if not args.document_id and any(getattr(args, key) is not None for key in ("start_line", "end_line", "offset")):
+            raise ValueError("行号范围和 offset 需要 --document-id 和 --source-version。")
+        for key in ("document_id", "source_version", "start_line", "end_line", "offset"):
+            if getattr(args, key) is not None:
+                values[key] = getattr(args, key)
     elif args.command == "ask":
         context = _object_file(args.context_file, 16000) if args.context_file else json.loads(args.context_json) if args.context_json else None
         if context is not None:

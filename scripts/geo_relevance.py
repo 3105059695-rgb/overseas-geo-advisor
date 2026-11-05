@@ -145,17 +145,50 @@ def _mode(unit: str) -> str:
     return "unspecified"
 
 
+def _scoped_units(title: str, text: str):
+    """Resolve only an explicit pronoun to one unambiguous local platform.
+
+    This is a retrieval hint. A title alone, unrelated sentence, mixed title,
+    or a different engine never supplies the missing source relationship.
+    """
+    active = platforms_in(title)
+    active = active if len(active) == 1 else []
+    active_mode = _mode(title)
+    result = []
+    for line in text.splitlines():
+        if re.match(r"^#{1,6}\s", line.strip()):
+            named = platforms_in(line)
+            if named:
+                active = named if len(named) == 1 else []
+                active_mode = _mode(line)
+            continue
+        for unit in _body_units(line):
+            named = platforms_in(unit)
+            inherited = False
+            if named:
+                active = named if len(named) == 1 else []
+                active_mode = _mode(unit)
+            elif active and re.match(r"^(?:它(?:们)?|该(?:助手|平台|产品|服务)|这个(?:助手|平台|产品)|it\b|its\b|this (?:assistant|platform|product|service)\b|the (?:assistant|service)\b)", unit, re.I):
+                named, inherited = active[:], True
+            result.append((unit, named, inherited, active_mode if inherited else _mode(unit)))
+    return result
+
+
 def passage_relevance(intent: dict, title: str, text: str) -> dict:
     targets = intent["platforms"]
-    # A title can nominate a document, but only the returned text may support it.
-    matched = [p for p in targets if p in platforms_in(text)]
-    units = _body_units(text)
-    classified = [(unit, _relation(unit, text), _mode(unit)) for unit in units]
-    relevant_units = [(unit, relation, mode) for unit, relation, mode in classified
-                      if not targets or any(p in platforms_in(unit) for p in targets)]
+    scoped = _scoped_units(title, text)
+    title_platforms = platforms_in(title)
+    found = set(platforms_in(text)) | {p for _, named, _, _ in scoped for p in named}
+    if len(title_platforms) == 1:
+        found.update(title_platforms)
+    matched = [p for p in targets if p in found]
+    units = [unit for unit, _, _, _ in scoped]
+    classified = [(unit, _relation(unit, text), mode, named, inherited) for unit, named, inherited, mode in scoped]
+    relevant_units = [(unit, relation, mode) for unit, relation, mode, named, _ in classified
+                      if not targets or any(p in named for p in targets)]
     relations = list(dict.fromkeys(relation for _, relation, _ in relevant_units if relation != "background")) or ["background"]
-    platform_relations = {p: list(dict.fromkeys(relation for unit, relation, _ in classified
-                                               if p in platforms_in(unit))) for p in matched}
+    platform_relations = {p: list(dict.fromkeys(relation for unit, relation, _, named, _ in classified
+                                               if p in named)) for p in matched}
     preference_query = "observed_preferences" in intent["source_aspects"] and "retrieval_channels" not in intent["source_aspects"]
     priority = (["observed_preference", "retrieval_channel", "training", "content_optimization", "background"]
                 if preference_query else ["training", "retrieval_channel", "observed_preference", "content_optimization", "background"])
@@ -163,6 +196,7 @@ def passage_relevance(intent: dict, title: str, text: str) -> dict:
               "reason": "仅有平台提及，尚未定位回答本题的信源说明。", "semantic_validation": "not_performed",
               "relation_type": next(r for r in priority if r in relations), "relation_types": relations,
               "relation_method": "lexical_hint_not_semantic_validation", "platform_relations": platform_relations,
+              "context_inherited_platforms": sorted({p for _, _, _, named, inherited in classified if inherited for p in named if p in targets}),
               "product_modes": list(dict.fromkeys(mode for _, _, mode in relevant_units)),
               "limitations": [unit[:1000] for unit in units if _LIMITATION.search(unit)][:8]}
     if not targets:
@@ -175,8 +209,8 @@ def passage_relevance(intent: dict, title: str, text: str) -> dict:
         return {**result, "reason": "建议或愿望类来源，不证明平台现行信源。"}
     direct = []
     for platform in matched:
-        for unit, relation, mode in classified:
-            if platform not in platforms_in(unit) or unit.endswith(("?", "？")):
+        for unit, relation, mode, named, inherited in classified:
+            if platform not in named or unit.endswith(("?", "？")):
                 continue
             if _OPINION.search(unit) or _OPERATOR.search(unit):
                 continue
@@ -196,7 +230,7 @@ def passage_relevance(intent: dict, title: str, text: str) -> dict:
             if useful:
                 direct.append(platform)
                 break
-    reason = "同一语句含平台及信源相关描述；须核对实际含义、模式和日期。" if direct else result["reason"]
+    reason = "语句直接提及平台或以代词承接唯一平台，并含信源描述；须核对指代、实际含义、模式和日期。" if direct else result["reason"]
     if preference_query and not direct:
         reason = "本片段未定位所问平台的观测偏好证据；搜索渠道、爬虫或可访问性只能作背景。"
     return {**result, "direct_platforms": direct, "tier": "direct_candidate" if direct else "background", "reason": reason}

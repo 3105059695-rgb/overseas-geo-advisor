@@ -15,6 +15,22 @@ import geo_snapshot as gs
 
 
 class IntentTests(unittest.TestCase):
+    def test_single_title_subject_can_support_explicit_pronoun_but_not_another_platform(self):
+        intent = query_intent("Claude 信源是什么？")
+        ref = passage_relevance(intent, "Claude 联网搜索", "它使用网络搜索检索网页并给出来源。")
+        self.assertEqual(ref["direct_platforms"], ["Claude"])
+        self.assertEqual(ref["context_inherited_platforms"], ["Claude"])
+        self.assertEqual(ref["semantic_validation"], "not_performed")
+        for title, text in [("Claude 和 Grok 的比较", "它检索网页并引用来源。"),
+                            ("Claude 联网搜索", "Grok searches web pages. It cites sources."),
+                            ("Claude 联网搜索", "费用按请求计费。"),
+                            ("Claude API", "It searches web pages and cites sources."),
+                            ("Claude 联网搜索", "Claude API has a search tool. It searches web pages and cites sources.")]:
+            with self.subTest(title=title, text=text):
+                self.assertEqual(passage_relevance(intent, title, text)["tier"], "background")
+        local = passage_relevance(intent, "比较说明", "## Grok\n它检索网页。\n## Claude\n它检索网页并给出来源。")
+        self.assertEqual(local["direct_platforms"], ["Claude"])
+
     def test_query_aliases_and_source_aspects(self):
         for question in ("Claude 信源偏好 引用哪些来源", "What sources does Anthropic use?", "Claude 的信息从哪里来"):
             intent = query_intent(question)

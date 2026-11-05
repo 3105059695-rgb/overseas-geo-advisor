@@ -15,11 +15,14 @@ from urllib.parse import urlsplit
 
 from geo_relevance import platforms_in, query_intent, passage_relevance
 
-VERSION = "0.5.0"
+VERSION = "0.5.2"
 OFFICIAL_DOMAINS = {
     "ChatGPT": ("openai.com",), "Claude": ("anthropic.com", "claude.com"),
     "Grok": ("x.ai", "help.x.com"), "Perplexity": ("perplexity.ai",),
     "Gemini": ("ai.google.dev", "developers.google.com", "support.google.com", "blog.google"),
+    "Google AI Overviews": ("developers.google.com", "support.google.com", "blog.google"),
+    "Google AI Mode": ("developers.google.com", "support.google.com", "blog.google"),
+    "Copilot": ("microsoft.com", "bing.com"),
 }
 PREFERENCE = r"喜欢|偏好|偏向|更常|采信|引用最多|哪些平台布局|prefer|citation share|source distribution"
 CHANNEL = r"搜索渠道|搜索引擎|搜索供应|从哪里找|从哪找|联网|web search|search provider"
@@ -133,7 +136,7 @@ def plan_question(question: str, context: dict | None = None, analysis: dict | N
         parts = [p.strip() for p in re.split(r"[？?；;，,]", resolved) if p.strip()]
         if len(parts) > 1 and re.search(METRIC, resolved, re.I) and re.search(ACTION, resolved, re.I):
             queries += [("、".join(platforms) + " " + part).strip() for part in parts[:3]]
-    for platform in (platforms or [""])[:4]:
+    for platform in (platforms or [""])[:6]:
         queries.append((platform + " " + aliases.get(task, resolved)).strip())
     supplied_queries = analysis.get("queries")
     if supplied_queries is not None:
@@ -142,6 +145,10 @@ def plan_question(question: str, context: dict | None = None, analysis: dict | N
         # Explicit host subquestions take precedence over fallback expansions.
         # Otherwise the last platform/facet silently falls off the six-query cap.
         queries = [_text(query, "query", 1000) for query in supplied_queries] + [resolved]
+    # A six-platform comparison needs all six platform routes. The complete
+    # question remains in the plan even when it has no additional query slot.
+    if not supplied_queries and len(platforms) == 6:
+        queries = queries[-6:]
     queries = list(dict.fromkeys(queries))[:6]
     if requested_period:
         year_query = " ".join(dict.fromkeys(years))
@@ -150,6 +157,18 @@ def plan_question(question: str, context: dict | None = None, analysis: dict | N
     if not isinstance(keywords, list) or any(not isinstance(v, str) for v in keywords):
         raise ValueError("keywords 必须为文本数组")
     keywords = list(dict.fromkeys(keywords))[:20]
+    scope = analysis.get("source_scope")
+    if scope is not None:
+        if not isinstance(scope, dict) or set(scope) - {"document_id", "source_version", "start_line", "end_line"}:
+            raise ValueError("source_scope 只能包含文档、版本和可选行范围")
+        scope = dict(scope)
+        for field in ("document_id", "source_version"):
+            scope[field] = _text(scope.get(field), "source_scope." + field, 240)
+        for field in ("start_line", "end_line"):
+            if field in scope and (type(scope[field]) is not int or scope[field] < 1):
+                raise ValueError("source_scope 行号必须为正整数")
+        if scope.get("end_line", 1_000_000) < scope.get("start_line", 1):
+            raise ValueError("source_scope 结束行不能早于开始行")
     return {"version": VERSION, "question": question, "resolved_question": resolved,
             "understanding": {"method": "host_ai_submitted" if analysis else "deterministic_fallback",
                               "platforms": platforms, "task": task, "freshness": freshness,
@@ -158,7 +177,7 @@ def plan_question(question: str, context: dict | None = None, analysis: dict | N
                               "tasks": ["metric_definition", "practical_method"] if mixed_tasks else [task],
                               "industry": context.get("industry"), "as_of": now,
                               "need": "当前引用来源的观察及适用范围；搜索能力说明不能替代偏好证据" if task == "source_preference" else task},
-            "queries": queries, "keywords": keywords, "allow_web": bool(allow_web),
+            "queries": queries, "keywords": keywords, "source_scope": scope, "allow_web": bool(allow_web),
             "risk": {"source_instructions": "untrusted_data", "no_source_mutation": True},
             "routes": [{"name": "keyword", "executor": "retriever"},
                        {"name": "query_embedding", "executor": "local_optional_encoder"},
@@ -180,12 +199,12 @@ def authority(ref: dict, platforms: list[str]) -> dict:
 
 def time_profile(ref: dict, now: str) -> dict:
     meta = {**ref.get("metadata", {}), **{k: v for k, v in ref.items() if v is not None}}
-    out = {k: _known_date(meta.get(k)) for k in ("published_at", "observed_at", "collected_at", "checked_at")}
+    out = {k: _known_date(meta.get(k)) for k in ("published_at", "updated_at", "observed_at", "collected_at", "checked_at")}
     # published_at may signal age, never substitutes for observed_at.
     out["observed_at_known"] = out["observed_at"] is not None
     out["age_since_publication_days"] = (date.fromisoformat(now) - date.fromisoformat(out["published_at"])).days if out["published_at"] else None
     out["current_validity"] = "requires_live_or_observation_review"
-    out["future_date"] = any(v and v > now for k, v in out.items() if k in {"published_at", "observed_at", "checked_at"})
+    out["future_date"] = any(v and v > now for k, v in out.items() if k in {"published_at", "updated_at", "observed_at", "checked_at"})
     return out
 
 
@@ -213,13 +232,22 @@ class WorkflowEngine:
             traces += [{"route": name, "status": "unavailable", "reason": "未配置本地向量模型/索引；未伪装成已执行"} for name in ("query_embedding", "keyword_embedding")]
         for route, query, search in calls:
             try:
-                result = search(query, limit=20)
+                scope = plan.get("source_scope") if route == "keyword" else None
+                result = search(query, limit=20, **scope) if scope else search(query, limit=20)
                 items = result.get("citations", []) + result.get("background_citations", []) if isinstance(result, dict) else result
                 if not isinstance(items, list):
                     raise ValueError("检索结果不是列表")
                 traces.append({"route": route, "query": query, "status": "completed", "hits": len(items)})
                 for rank, raw in enumerate(items, 1):
                     ref = dict(raw)
+                    requested_scope = plan.get("source_scope")
+                    if requested_scope and (
+                        ref.get("document_id") != requested_scope["document_id"]
+                        or ref.get("source_version") != requested_scope["source_version"]
+                        or ref.get("line_start", 0) < requested_scope.get("start_line", 1)
+                        or ref.get("line_end", 1_000_001) > requested_scope.get("end_line", 1_000_000)
+                    ):
+                        continue
                     key = candidate_id(ref)
                     if key not in pool:
                         pool[key] = {**ref, "citation_id": key, "rrf_score": 0.0, "retrieval_routes": [], "retrieval_hits": []}
@@ -258,7 +286,7 @@ class WorkflowEngine:
                     raise ValueError("回读行号范围发生变化")
                 ref = {**ref, **read, "excerpt": text, "citation_id": ref["citation_id"], "read_status": "completed"}
                 meta = ref.get("metadata", {})
-                for field in ("original_url", "reading_url", "published_at", "observed_at", "collected_at", "checked_at"):
+                for field in ("original_url", "reading_url", "published_at", "updated_at", "observed_at", "collected_at", "checked_at", "author", "original_title", "attachments", "retrieval_role"):
                     if not ref.get(field) and meta.get(field):
                         ref[field] = meta[field]
                 if not ref.get("reading_url"):
@@ -271,6 +299,9 @@ class WorkflowEngine:
                 excluded.append({"citation_id": ref["citation_id"], "reason": "source_read_failed", "error_type": type(exc).__name__})
                 continue
             normalized = re.sub(r"\s+", " ", text).strip()
+            if ref.get("retrieval_role") == "navigation":
+                excluded.append({"citation_id": ref["citation_id"], "reason": "navigation_not_evidence"})
+                continue
             key = digest(normalized)
             if key in seen_text:
                 continue
@@ -384,8 +415,14 @@ def adjudicate(packet: dict, judgments: list[dict], web_sources: list[dict] | No
             errors.append("missing_conditions")
             conditions = {}
         ps = j.get("platforms", [])
-        if not isinstance(ps, list) or requested and (not ps or not set(ps).issubset(requested)):
+        valid_platforms = isinstance(ps, list) and all(isinstance(p, str) and p for p in ps)
+        if not valid_platforms or requested and (not ps or not set(ps).issubset(requested)):
             errors.append("wrong_platform_scope")
+        # Check the source owner for this claim, not any platform mentioned
+        # elsewhere in a comparison. Broad questions may name products only
+        # in individual claims, so use those explicit claim platforms.
+        owners = set(ref["authority"]["official_for"]) if ref else set()
+        official_for_claim = bool(owners) and valid_platforms and bool(ps) and set(ps).issubset(owners)
         relation = j.get("relation")
         preference = packet["plan"]["understanding"]["task"] == "source_preference"
         if preference and relation not in packet["plan"]["understanding"].get("requested_relations", ["observed_preference"]):
@@ -395,7 +432,7 @@ def adjudicate(packet: dict, judgments: list[dict], web_sources: list[dict] | No
             errors.append("unsupported_claim_kind")
         if kind in {"historical_report", "author_report", "method"} and not conditions.get("scope"):
             errors.append("missing_attribution_scope")
-        if ref and j.get("source_label") == "official" and not ref["authority"]["is_official_for_question"]:
+        if ref and j.get("source_label") == "official" and not (official_for_claim or not ps and not requested and bool(owners)):
             errors.append("third_party_mislabeled_official")
         if ref and ref.get("content_role") == "teaching" and kind in {"current_fact", "historical_report", "author_report"}:
             errors.append("teaching_explanation_is_not_original_factual_evidence")
@@ -407,7 +444,7 @@ def adjudicate(packet: dict, judgments: list[dict], web_sources: list[dict] | No
             if preference and relation == "observed_preference":
                 # A single current study still cannot establish a global ranking.
                 errors.append("preference_study_must_remain_attributed_report")
-            elif not ref["authority"]["is_official_for_question"]:
+            elif not official_for_claim:
                 errors.append("current_product_fact_needs_primary_official_source")
         if preference and relation == "observed_preference" and kind in {"author_report", "historical_report"}:
             for field in ("observed_period", "product_mode", "sample"):
@@ -488,7 +525,7 @@ def postcheck(assessment: dict, answer: str, claim_texts: list[dict], host_revie
         if not links or not any(link in answer[max(0, start-100):start+len(text)+800] for link in links):
             errors.append("关键陈述附近缺少真实来源链接")
         if claim["kind"] in {"historical_report", "author_report"}:
-            if not re.search(r"作者|研究|实验|观察|报告|样本|\b20\d{2}\b", text):
+            if not re.search(r"作者|研究|实验|观察|报告|样本|(?:官方|收录).{0,20}(?:说明|文档|笔记|记载)|\b20\d{2}\b", text):
                 errors.append("历史或作者观察在正文中丢失归因")
         located.add(c_id)
     if assessment["accepted_claims"] and not located:

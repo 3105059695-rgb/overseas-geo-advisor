@@ -18,6 +18,7 @@ import sys
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import uuid
+from source_metadata import extract_metadata
 
 SCHEMA_VERSION = 1
 SESSION_REVIEW_ORIGIN = "AI_session_review_not_independent_verification"
@@ -122,34 +123,7 @@ def _canonical_url(url: str | None) -> str | None:
 
 
 def _metadata(text: str, relative: str) -> dict:
-    top = text.splitlines()[:90]
-    title = next((re.sub(r"^#+\s*", "", x).strip() for x in top if re.match(r"^#\s", x)), Path(relative).stem)
-    original_url = None
-    published_at = None
-    for line in top:
-        # Metadata fields end at the first body heading; body citations must not
-        # overwrite the source article URL or publication date.
-        if re.match(r"^#{2,6}\s", line):
-            break
-        clean = re.sub(r"^\s*[-*]\s+", "", line).replace("**", "").strip()
-        source_field = re.match(r"^(?:原文(?:链接|地址|网址|来源)?|原始(?:链接|地址|网址|来源)|来源(?:链接|地址|网址)?|source[_ ]?url|original[_ ]?url|帖子链接)\s*[:：]\s*(.*)$", clean, re.I)
-        if not original_url and source_field:
-            urls = re.findall(r"https?://[^\s<>\]\)\"']+", source_field[1])
-            for url in urls:
-                candidate = _canonical_url(url)
-                if candidate and "feishu.cn" not in candidate and "larksuite.com" not in candidate:
-                    original_url = candidate
-                    break
-        date_field = re.match(r"^(?:(?:原文|原始)?(?:发布时间|发布日期|发表时间|发表日期)|发帖时间|published(?:_at| date)?|publication(?: date)?|日期)\s*[:：]\s*(.*)$", clean, re.I)
-        if not published_at and date_field:
-            m = re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})", date_field[1])
-            if m:
-                try:
-                    published_at = date(*map(int, m.groups())).isoformat()
-                except ValueError:
-                    pass
-    kind = "paper_related" if "论文" in relative else "discussion" if "reddit" in relative.lower() else "archived_article"
-    return {"title": title, "original_url": original_url, "published_at": published_at, "source_type": kind}
+    return extract_metadata(text, relative, _canonical_url)
 
 
 def _segments(text: str) -> list[tuple[int, int, str, str]]:
@@ -233,8 +207,9 @@ class GeoKB:
     def _excluded(relative: str) -> bool:
         parts = Path(relative).parts
         name = Path(relative).name
-        return ("00_GEO知识库_实操目录" in parts or any(x.startswith(".") for x in parts)
+        return (any(x in {"00_GEO知识库_实操目录", "00_GEO知识库_按用途分类"} for x in parts) or any(x.startswith(".") for x in parts)
                 or name.startswith("__Obsidian引用_") or name.startswith("00_")
+                or name.startswith("详细教学样章")
                 or "总目录" in name or name.startswith("交付标准及进度")
                 or name in {"README.md", "AGENTS.md", "SKILL.md"})
 
@@ -294,9 +269,13 @@ class GeoKB:
             if source.get("published_at"):
                 meta["published_at"] = _validate_date(source["published_at"])
                 meta["publication_date_origin"] = "curated_source_metadata"
+            for field in ("source_key", "author", "authors", "original_title", "title_aliases", "publisher"):
+                if source.get(field):
+                    meta[field] = source[field]
             meta.update({"relative_path": relative, "reading_url": item.get("source_url"), "group": item.get("group"),
                          "topic": item.get("topic"), "review_status": "unreviewed",
-                         "classification_pending": relative in pending, "review_scope": [], "allowed_uses": ["reading_lead"]})
+                         "classification_pending": relative in pending, "review_scope": [],
+                         "allowed_uses": ["navigation"] if meta["retrieval_role"] == "navigation" else ["reading_lead"]})
             digest = _hash(text)
             doc_id = "doc-" + _hash(relative)[:20]
             # X post and paper identity take precedence; exact replicas share identity.
@@ -310,12 +289,18 @@ class GeoKB:
             con.execute("INSERT INTO documents VALUES(?,?,?,?,1,?) ON CONFLICT(document_id) DO UPDATE SET work_id=excluded.work_id,current_version=excluded.current_version,active=1,meta_json=excluded.meta_json", (doc_id, relative, work_id, digest, _json(meta)))
             if not exists:
                 con.execute("INSERT INTO versions VALUES(?,?,?,?,?,?)", (doc_id, digest, text, len(text.splitlines()), _json(meta), _now()))
-                for start, end, excerpt, heading in _segments(text):
+                for start, end, excerpt, heading in ([] if meta["retrieval_role"] == "navigation" else _segments(text)):
                     cur = con.execute("INSERT INTO chunks(document_id,source_version,line_start,line_end,heading,excerpt) VALUES(?,?,?,?,?,?)", (doc_id, digest, start, end, heading, excerpt))
                     con.execute("INSERT INTO chunks_fts(rowid,title_tokens,body_tokens) VALUES(?,?,?)", (cur.lastrowid, " ".join(_tokens(meta["title"] + " " + heading)), " ".join(_tokens(excerpt))))
                 report["new_versions"] += 1
             else:
+                # Text hashes name source bytes, not extraction-code versions.
+                # Refresh derived metadata without inventing a source revision.
+                con.execute("UPDATE versions SET meta_json=? WHERE document_id=? AND source_version=?", (_json(meta), doc_id, digest))
                 report["unchanged"] += 1
+            if meta["retrieval_role"] == "navigation":
+                con.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id=? AND source_version=?)", (doc_id, digest))
+                con.execute("DELETE FROM chunks WHERE document_id=? AND source_version=?", (doc_id, digest))
             loaded[relative] = {"document_id": doc_id, "source_version": digest, "text": text, "meta": meta}
             report["indexed"] += 1
         by_source_key = {s["source_key"]: s for s in curated.get("sources", [])}
@@ -341,7 +326,7 @@ class GeoKB:
             report["claims_valid"] += 1
             valid_claim_ids.append(claim["claim_id"])
         # Save exact curation used; later edits are not silently trusted without a rebuild.
-        manifest_digest = _hash(_json(sorted((k, v["source_version"]) for k, v in loaded.items())) + _json(curated))
+        manifest_digest = _hash(_json(sorted((k, v["source_version"], v["meta"]) for k, v in loaded.items())) + _json(curated))
         for key, value in {"knowledge_version": manifest_digest, "built_at": _now(), "curated": _json(curated),
                            "active_claim_ids": _json(valid_claim_ids), "build_report": _json(report)}.items():
             con.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (key, value))
@@ -368,7 +353,7 @@ class GeoKB:
         meta = json.loads(row["meta_json"])
         reviewed = con.execute("SELECT claim_json FROM reviewed_claims WHERE document_id=? AND source_version=? AND line_start>=? AND line_end<=?", (doc_id, version, start, end)).fetchall()
         claims = [json.loads(x[0]) for x in reviewed]
-        uses = {"reading_lead"}
+        uses = {"navigation"} if meta.get("retrieval_role") == "navigation" else {"reading_lead"}
         scopes = set()
         for claim in claims:
             uses.add(claim.get("allowed_use", "reading_lead"))
@@ -378,6 +363,8 @@ class GeoKB:
                 "excerpt": "\n".join(row["text"].splitlines()[start-1:end]), "title": meta["title"],
                 "original_url": meta.get("original_url"), "reading_url": meta.get("reading_url"),
                 "published_at": meta.get("published_at"), "source_type": meta.get("source_type"),
+                "retrieval_role": meta.get("retrieval_role", "source_content"),
+                "source_dates": meta.get("source_dates", []), "metadata_provenance": meta.get("metadata_provenance", {}),
                 "review_scope": sorted(scopes), "allowed_uses": sorted(uses), "reviewed_claims": claims,
                 "classification_pending": meta.get("classification_pending", False),
                 "review_scope_applies_to": "reviewed_claims only, not the whole excerpt"}
@@ -405,6 +392,7 @@ class GeoKB:
                 rows = con.execute("""SELECT c.*,bm25(chunks_fts,3.0,1.0) AS rank,d.meta_json FROM chunks_fts
                     JOIN chunks c ON c.id=chunks_fts.rowid JOIN documents d ON d.document_id=c.document_id
                     WHERE chunks_fts MATCH ? AND d.active=1 AND c.source_version=d.current_version
+                    AND COALESCE(json_extract(d.meta_json,'$.retrieval_role'),'source_content')!='navigation'
                     AND (? IS NULL OR (json_extract(d.meta_json,'$.published_at') IS NOT NULL AND json_extract(d.meta_json,'$.published_at')<=?))
                     ORDER BY rank LIMIT 160""", (query, as_of, as_of)).fetchall()
                 seen = set()
@@ -650,6 +638,8 @@ class GeoKB:
             row = con.execute("SELECT text,meta_json FROM versions WHERE document_id=? AND source_version=?", (document_id, source_version)).fetchone()
             if not row:
                 raise ValueError("指定资料版本不存在，未回退到当前版本")
+            if json.loads(row["meta_json"]).get("retrieval_role") == "navigation":
+                raise ValueError("导航与工作记录不能核对为答案证据")
             quote = exact_quote.replace("\r\n", "\n")
             occurrences = row["text"].count(quote)
             if occurrences == 0:
@@ -707,6 +697,8 @@ class GeoKB:
                         authoritative.append(self._resolve_citation(con, cid))
                     except ValueError as exc:
                         errors.append(str(exc))
+                if any(c.get("retrieval_role") == "navigation" for c in authoritative):
+                    errors.append("导航与工作记录不能支撑答案断言")
                 use = claim.get("allowed_use")
                 if not isinstance(use, str):
                     errors.append("必须明确 allowed_use")

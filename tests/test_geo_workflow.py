@@ -10,17 +10,25 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from geo_workflow import main, load
+from geo_workflow import main, load, engine
 
 
 class WorkflowEntryTests(unittest.TestCase):
+    def test_default_workflow_forwards_scoped_lookup(self):
+        scope = {"document_id": "doc-" + "a" * 20, "source_version": "b" * 64, "start_line": 10, "end_line": 20}
+        with patch("geo_snapshot.SnapshotClient") as cls:
+            cls.return_value.call.return_value = {"citations": []}
+            worker = engine()
+            worker.lexical("definition", limit=4, **scope)
+        cls.return_value.call.assert_called_once_with("search_geo", {"question": "definition", "limit": 4, **scope})
+
     def test_implicit_environment_config_cannot_redirect_public_default(self):
         with patch.dict(os.environ, {"GEO_WORKFLOW_CONFIG": "missing-private-maintainer-config.json"}):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 code = main(["plan", "--question", "Claude 和 Grok 的信源？"])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(output.getvalue())["version"], "0.5.0")
+        self.assertEqual(json.loads(output.getvalue())["version"], "0.5.2")
 
     def test_windows_bom_json_and_explicit_missing_config(self):
         with tempfile.TemporaryDirectory() as directory:

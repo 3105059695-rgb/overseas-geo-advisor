@@ -78,6 +78,19 @@ def fixture(mode='normal'):
 
 
 class RemoteTests(unittest.TestCase):
+    def test_search_scope_cli_forwards_exact_version_and_bounds(self):
+        did, version = "doc-" + "a" * 20, "b" * 64
+        with patch.object(geo_remote.KnowledgeClient, "call", return_value={"status": "ok"}) as call:
+            args = geo_remote.make_parser().parse_args(["--transport", "github", "search", "--question", "grounding",
+                    "--document-id", did, "--source-version", version, "--start-line", "500", "--end-line", "600", "--offset", "2"])
+            geo_remote.execute(args)
+        self.assertEqual(call.call_args.args, ("search_geo", {"question": "grounding", "limit": 10,
+                         "document_id": did, "source_version": version, "start_line": 500, "end_line": 600, "offset": 2}))
+        for extra in (["--document-id", did], ["--offset", "2"]):
+            with patch.object(geo_remote.KnowledgeClient, "call") as call, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(geo_remote.main(["search", "--question", "grounding", *extra]), 2)
+                call.assert_not_called()
+
     def test_handshake_and_query_without_credentials_or_local_database(self):
         with fixture() as (server, url):
             result = geo_remote.RemoteClient(url).call('ask_geo', {'question': '海外信源怎么分？'})

@@ -77,6 +77,19 @@ def web_citation_id(ref):
 
 
 class QueryPlanTests(unittest.TestCase):
+    def test_six_platform_comparison_keeps_every_platform_query(self):
+        plan = plan_question("海外不同 AI 的信源分别是什么？", today=TODAY)
+        self.assertEqual(len(plan["queries"]), 6)
+        for platform in plan["understanding"]["platforms"]:
+            self.assertTrue(any(platform in query for query in plan["queries"]))
+
+    def test_scoped_queries_require_an_explicit_immutable_version(self):
+        with self.assertRaises(ValueError):
+            plan_question("grounding 是什么？", analysis={"source_scope": {"document_id": "doc-abc"}})
+        scope = {"document_id": "doc-abc", "source_version": "version", "start_line": 5, "end_line": 20}
+        plan = plan_question("grounding 是什么？", analysis={"source_scope": scope})
+        self.assertEqual(plan["source_scope"], scope)
+
     def test_all_host_subquestions_survive_without_fallback_crowding(self):
         queries = ["Claude official search", "Grok official search", "Claude citation domains",
                    "Grok citation domains", "Claude observation sample", "Grok observation sample"]
@@ -128,6 +141,25 @@ class QueryPlanTests(unittest.TestCase):
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_document_scope_cannot_be_escaped_by_another_retrieval_route(self):
+        target, unrelated = source(1), source(2, text="Another document about the same topic.")
+        corpus = Corpus([target, unrelated])
+        calls = []
+        def scoped_lexical(query, limit=20, **scope):
+            calls.append(scope)
+            return {"citations": deepcopy([target])}
+        scope = {"document_id": target["document_id"], "source_version": target["source_version"]}
+        result = WorkflowEngine(scoped_lexical, corpus.read, corpus.vector_fixture).prepare(
+            "论文的方法是什么？", analysis={"source_scope": scope}, today=TODAY)
+        self.assertTrue(calls)
+        self.assertTrue(all(call == scope for call in calls))
+        self.assertEqual({c["document_id"] for c in result["candidates"]}, {target["document_id"]})
+
+    def test_navigation_can_be_read_but_cannot_supply_answer_evidence(self):
+        result = packet([source(retrieval_role="navigation")])
+        self.assertEqual(result["candidates"], [])
+        self.assertTrue(any(x["reason"] == "navigation_not_evidence" for x in result["excluded"]))
+
     def test_compound_question_retains_formula_without_platform_name(self):
         # Popular platform-specific passages recur in every broad query. A
         # formula relevant to only the definition subquery must survive them.
@@ -233,6 +265,32 @@ class RetrievalTests(unittest.TestCase):
 
 
 class EvidenceGatesTests(unittest.TestCase):
+    def test_official_source_must_match_every_claim_platform(self):
+        prepared = packet([], question="ChatGPT 和 Claude 当前联网能力是什么？", allow_web=True)
+        text = "This synthetic fixture describes Claude web search."
+        web = web_source(text=text)
+        claim = judgment({"citation_id": web_citation_id(web), "excerpt": text},
+                         platforms=["Claude"], kind="current_fact", relation="retrieval_channel",
+                         source_label="official", claim=text)
+        result = adjudicate(prepared, [claim], [web], web_status="completed")
+        self.assertEqual(result["accepted_claims"], [])
+        self.assertIn("current_product_fact_needs_primary_official_source", result["rejected_claims"][0]["rejection_reasons"])
+
+    def test_broad_question_allows_claim_specific_official_sources(self):
+        prepared = packet([], question="海外 AI 产品有哪些？", allow_web=True)
+        self.assertEqual(prepared["plan"]["understanding"]["platforms"], [])
+        for platform, url in [("Copilot", "https://learn.microsoft.com/copilot/"),
+                              ("Google AI Mode", "https://blog.google/products/search/"),
+                              ("ChatGPT", "https://openai.com/index/search/")]:
+            with self.subTest(platform=platform):
+                text = f"Synthetic fixture: {platform} has a web search feature."
+                web = web_source(url=url, text=text)
+                claim = judgment({"citation_id": web_citation_id(web), "excerpt": text},
+                                 platforms=[platform], kind="current_fact", relation="retrieval_channel",
+                                 source_label="official", claim=text)
+                result = adjudicate(prepared, [claim], [web], web_status="completed")
+                self.assertEqual(len(result["accepted_claims"]), 1)
+
     def test_mixed_platform_relation_gaps_cannot_be_filled_by_other_relation(self):
         refs = [source(1, text="Our study found Claude cited Reddit in 28% of answers."),
                 source(2, text="Grok searches public X posts and the Internet.")]
@@ -334,6 +392,17 @@ class EvidenceGatesTests(unittest.TestCase):
 
 
 class PostcheckTests(unittest.TestCase):
+    def test_archived_official_note_attribution_is_kept_in_plain_language(self):
+        prepared = packet([source(text=CHANNEL)], question="ChatGPT 的搜索渠道是什么？")
+        ref = prepared["candidates"][0]
+        for text, expected in [("知识库收录的官方说明笔记记载：ChatGPT 可以搜索网页。", "process_pass"),
+                               ("ChatGPT 总是搜索网页。", "blocked")]:
+            with self.subTest(text=text):
+                assessed = adjudicate(prepared, [judgment(ref, claim=text, relation="retrieval_channel")])
+                answer = text + ' [来源](' + ref['original_url'] + ')'
+                result = postcheck(assessed, answer, [{"citation_id":ref['citation_id'],"text":text}], HOST_REVIEW)
+                self.assertEqual(result['status'],expected)
+
     def setUp(self):
         prepared = packet()
         self.assessment = adjudicate(prepared, [judgment(prepared["candidates"][0])])

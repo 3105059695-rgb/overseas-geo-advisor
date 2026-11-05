@@ -24,10 +24,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from geo_relevance import (PLATFORM_ALIASES, query_intent, passage_relevance,
                            balanced_select, platform_coverage, answer_brief)
+from geo_retrieval import document_routes, rank_passages, is_navigation, body_text, strings
 
 REPOSITORY = "3105059695-rgb/overseas-geo-advisor"
-DATA_COMMIT = "71b3bf759adef477fb2e72df5797ae83f38717a4"
-MANIFEST_SHA256 = "020d26942e3e4e4f2626a38073f777a984b08fcf68ef4fdd79ef99b22670a4f4"
+DATA_COMMIT = "c66c85b1bf94bbe6fe641602858cf61755814b33"
+MANIFEST_SHA256 = "121c15e97160a95354a56eb0c4170cf418dfe4f5673a4835c5fb193327d83713"
 RAW_BASE = f"https://raw.githubusercontent.com/{REPOSITORY}/{DATA_COMMIT}/data/"
 BLOB_BASE = f"https://github.com/{REPOSITORY}/blob/{DATA_COMMIT}/data/"
 MAX_ASSET_BYTES = 8 * 1024 * 1024
@@ -312,11 +313,16 @@ class SnapshotClient:
         return {"citation_id": f"{d['document_id']}@{d['source_version']}:L{start}-L{end}",
                 "document_id": d["document_id"], "source_version": d["source_version"], "work_id": meta.get("work_id"),
                 "title": meta.get("title"), "line_start": start, "line_end": end, "excerpt": excerpt,
+                "line_count": len(lines), "next_start_line": end + 1 if end < len(lines) else None,
+                "context_read": {"document_id": d["document_id"], "source_version": d["source_version"],
+                                 "start_line": max(1, start - 8), "end_line": min(len(lines), end + 8)},
                 "original_url": _safe_url(meta.get("original_url")), "reading_url": BLOB_BASE + path,
                 "snapshot_url": RAW_BASE + path, "reading_url_format": "versioned_source_json",
                 "published_at": meta.get("published_at"), "source_type": meta.get("source_type"),
                 "checked_at": meta.get("checked_at"), "content_kind": meta.get("content_kind"),
-                "allowed_uses": sorted({c["allowed_use"] for c in claims}) if claims else ["reading_lead"],
+                "retrieval_role": meta.get("retrieval_role"),
+                "allowed_uses": (["navigation"] if is_navigation(meta) else
+                                 sorted({c["allowed_use"] for c in claims}) if claims else ["reading_lead"]),
                 "reviewed_claims": claims, "review_scope": ["exact_excerpt_checked"] if claims else [],
                 "independent_fact_verification": False, "expert_approval": False, **temporal}
 
@@ -327,7 +333,39 @@ class SnapshotClient:
         start, end = int(m[3]), int(m[4])
         _integer(start, "line_start", 1, 1_000_000)
         _integer(end, "line_end", start, min(start + 399, 1_000_000))
-        return self._citation(self._source(m[1], m[2]), start, end)
+        return self._citation_with_assets(self._source(m[1], m[2]), start, end)
+
+    def _citation_with_assets(self, document: dict, start: int, end: int):
+        ref = self._citation(document, start, end)
+        template = self._catalog().get("attachment_path_template")
+        if not template:
+            return ref
+        name = template.format(document_id=document["document_id"], source_version=document["source_version"]).removeprefix("/data/")
+        manifest = self._manifest or self._asset("manifest.json")
+        if name not in manifest.get("files", {}):
+            return {**ref, "attachments": []}
+        mapping = self._asset(name)
+        if (mapping.get("document_id") != document["document_id"] or mapping.get("source_version") != document["source_version"]
+                or not isinstance(mapping.get("attachments"), list)):
+            raise SnapshotError("snapshot_integrity_error", "附件映射的资料版本不一致。")
+        attachments = []
+        for original in mapping["attachments"]:
+            if not isinstance(original, dict) or type(original.get("line_start")) is not int:
+                raise SnapshotError("snapshot_integrity_error", "附件映射行号无效。")
+            if not start <= original["line_start"] <= end:
+                continue
+            item = dict(original)
+            if item.get("status") == "available":
+                path = item.get("path", "").removeprefix("/data/")
+                entry = manifest.get("files", {}).get(path)
+                if (not re.fullmatch(r"media/[a-f0-9]{64}\.[a-zA-Z0-9]{1,12}", path)
+                        or not entry or entry.get("sha256") != item.get("sha256") or entry.get("bytes") != item.get("bytes")):
+                    raise SnapshotError("snapshot_integrity_error", "附件摘要/长度与已验证清单不一致。")
+                item.update(url=RAW_BASE + path, manifest_verified=True, binary_downloaded=False)
+            elif item.get("status") == "external":
+                item["url"] = _safe_url(item.get("url"))
+            attachments.append(item)
+        return {**ref, "attachments": attachments}
 
     def browse(self, args: dict):
         c = self._catalog()
@@ -354,7 +392,7 @@ class SnapshotClient:
             size += len(lines[i]) + 1
         if end < start:
             raise InputError("单行超过 30000 字符；请查看原始来源")
-        ref = self._citation(d, start, end)
+        ref = self._citation_with_assets(d, start, end)
         return {"status": "ok", **ref, "text": ref["excerpt"], "line_count": len(lines),
                 "next_start_line": end + 1 if end < requested else None, "truncated": end < requested,
                 "metadata": d["metadata"], "semantic_validation": "not_performed"}
@@ -363,6 +401,16 @@ class SnapshotClient:
         question = _text(args.get("question"), "question")
         limit = _integer(args.get("limit", 10), "limit", 1, 20)
         as_of, c = _date(args.get("as_of")), self._catalog()
+        explicit = "document_id" in args or "source_version" in args
+        if explicit:
+            _text(args.get("document_id"), "document_id", 240)
+            _text(args.get("source_version"), "source_version", 240)
+        if not explicit and any(key in args for key in ("start_line", "end_line", "offset")):
+            raise InputError("行号范围和 offset 只用于指定 document_id/source_version 的检索")
+        routes = ([{"document_id": _text(args["document_id"], "document_id", 240), "match_type": "explicit_scope", "score": 100, "anchors": []}]
+                  if explicit else document_routes(question, c["documents"]))
+        if routes:
+            return self._search_documents(args, c, routes, question, limit, as_of)
         intent = query_intent(question)
         stop = set(c["tokenizer"]["stop_words"])
         normalized = re.sub(r"请帮我|请告诉我|我想知道|我想了解|什么是|为什么|怎么样|怎么|如何|应该|哪些|有什么|有哪些|关于|海外|国外|目前|现在|以及|我的|你的", " ", question.lower())
@@ -399,9 +447,13 @@ class SnapshotClient:
                 meta = c["documents"].get(chunk["document_id"])
                 if not meta or (as_of and (not meta.get("published_at") or meta["published_at"] > as_of)):
                     continue
-                score = idf * (math.log1p(body_tf) / (0.75 + 0.25 * chunk["token_count"] / c["search"]["average_token_count"]) + 3.5 * math.log1p(title_tf))
+                # A title nominates a document; repeating its score on every
+                # chunk used to bury the actual definition in long sources.
+                heading_hit = term in _tokens(chunk.get("heading", ""), stop)
+                score = idf * (math.log1p(body_tf) / (0.75 + 0.25 * chunk["token_count"] / c["search"]["average_token_count"])
+                               + (2 if heading_hit else 0) + .12 * math.log1p(title_tf))
                 scores[chunk_id] += score * (2 if term in original else 0.7)
-                if term in original:
+                if term in original and (body_tf or heading_hit):
                     matched[chunk_id].add(term)
         ranked = sorted(((chunk_id, score * (1 + len(matched[chunk_id]) / max(len(original), 1))) for chunk_id, score in scores.items()), key=lambda r: (-r[1], r[0]))
         # A broad source word alone cannot qualify a passage for a named engine.
@@ -410,6 +462,8 @@ class SnapshotClient:
         preliminary, seen, per_document, per_work = [], set(), defaultdict(int), defaultdict(int)
         for chunk_id, score in ranked:
             chunk = by_id[chunk_id]
+            if is_navigation(c["documents"][chunk["document_id"]]):
+                continue
             if chunk["content_hash"] in seen or (original and not matched[chunk_id] and not intent["platforms"]):
                 continue
             engines = [p for p, hits in anchor_hits.items() if chunk_id in hits]
@@ -432,12 +486,13 @@ class SnapshotClient:
         def cite(item):
             chunk = item["chunk"]
             d = self._source(chunk["document_id"], chunk["source_version"])
-            ref = {**self._citation(d, chunk["line_start"], min(chunk["line_end"], chunk["line_start"] + 399)),
+            ref = {**self._citation_with_assets(d, chunk["line_start"], min(chunk["line_end"], chunk["line_start"] + 399)),
                    "retrieval_score": round(item["score"], 4), "heading": chunk["heading"]}
             ref["relevance"] = passage_relevance(intent, ref["title"] or "", ref["excerpt"])
             return {"id": item["id"], "citation": ref, "relevance": ref["relevance"]}
         with ThreadPoolExecutor(max_workers=4) as pool:
             located = list(pool.map(cite, selected))
+        located = [item for item in located if body_text(item["citation"]["excerpt"])]
         direct = [item for item in located if item["relevance"]["tier"] == "direct_candidate"]
         preference_query = "observed_preferences" in intent["source_aspects"] and "retrieval_channels" not in intent["source_aspects"]
         if preference_query:
@@ -465,6 +520,93 @@ class SnapshotClient:
                                     "whole_corpus_reviewed": False, "relevance_method": "lexical_relation_hint_not_semantic_validation"},
                 "generation_policy": POLICY, "semantic_validation": "not_performed"}
 
+    def _search_documents(self, args, catalog, routes, question, limit, as_of):
+        """Read verified nominated sources, then rank their actual sections."""
+        intent, stop = query_intent(question), set(catalog["tokenizer"]["stop_words"])
+        explicit = bool(args.get("document_id"))
+        offset = _integer(args.get("offset", 0), "offset", 0, 100000)
+        start = _integer(args.get("start_line", 1), "start_line", 1, 1000000)
+        end = _integer(args["end_line"], "end_line", start, 1000000) if args.get("end_line") is not None else None
+        matches, located, total_passages = [], [], 0
+        selected_routes = routes[:8]
+        for route in selected_routes:
+            key = route["document_id"]
+            meta = catalog["documents"].get(key)
+            if not meta:
+                raise MissingSource("指定资料不存在，未替换成其他资料")
+            version = args["source_version"] if explicit else meta.get("current_version") or next(iter(meta.get("versions", {})), None)
+            # _source validates manifest bytes, body hash, exact version and
+            # line count for both current and historical document searches.
+            source = self._source(key, version)
+            source_meta = source["metadata"]
+            lines = source["text"].splitlines()
+            if start > max(1, len(lines)):
+                raise InputError("start_line 超出原文行数")
+            if as_of and (not source_meta.get("published_at") or source_meta["published_at"] > as_of):
+                continue
+            matches.append({**route, "source_version": version, "title": source_meta.get("title"),
+                            "work_id": meta.get("work_id"), "retrieval_role": meta.get("retrieval_role"),
+                            "line_count": len(lines)})
+            if is_navigation(meta) and not explicit and route["match_type"] != "document_id":
+                continue
+            focused = question
+            for anchor in sorted(route["anchors"], key=len, reverse=True):
+                focused = re.sub(re.escape(anchor), " ", focused, flags=re.I)
+            focused = re.sub(r"请帮我|请告诉我|我想知道|我想了解|里(?:讲|说)什么|讲了什么|说了什么|什么意思|什么含义|什么是|是什么|为什么|怎么样|怎么|如何|应该|哪些|有什么|有哪些|关于|海外|国外|目前|现在|以及|我的|你的|里的|中的|解释|介绍|阅读|原文|全文|定义", " ", focused.lower())
+            terms = list(dict.fromkeys(_tokens(focused, stop)))[:40]
+            # These terms already located the document. Reusing its title as
+            # the passage query lets headers/about pages outrank the requested
+            # subsection across paraphrases (then consume the same-work cap).
+            # Keep the remaining content target, with a fallback when the user
+            # only asked for the document's overall subject.
+            title_terms = set(_tokens(" ".join(value for field in ("title", "original_title", "title_aliases")
+                                                for value in strings(source_meta.get(field))), stop))
+            passage_terms = [term for term in terms if term not in title_terms] or terms
+            passages = rank_passages(source["text"], passage_terms, lambda value: _tokens(value, stop), start, end)
+            if not passages and passage_terms != terms:
+                passage_terms = terms
+                passages = rank_passages(source["text"], terms, lambda value: _tokens(value, stop), start, end)
+            total_passages += len(passages)
+            for passage in passages:
+                ref = self._citation_with_assets(source, passage["line_start"], passage["line_end"])
+                ref.update(heading=passage["heading"], retrieval_score=round(passage["score"], 4),
+                           retrieval_scope={"document_id": key, "source_version": version, "match_type": route["match_type"],
+                                            "passage_query_terms": passage_terms})
+                ref["relevance"] = passage_relevance(intent, ref.get("title") or "", ref["excerpt"])
+                # Navigation documents remain readable identity results, never
+                # upgraded to an evidence-bearing direct candidate.
+                if is_navigation(meta):
+                    ref["relevance"] = {**ref["relevance"], "tier": "background", "direct_platforms": [],
+                                        "reason": "目录/工作记录仅用于定位资料，不支持正文断言。"}
+                located.append({"id": ref["citation_id"], "citation": ref, "relevance": ref["relevance"],
+                                "score": passage["score"], "navigation": is_navigation(meta)})
+        located.sort(key=lambda item: (item["navigation"], -item["score"], item["citation"]["line_start"]))
+        unique, seen = [], set()
+        for item in located:
+            key = (item["citation"].get("work_id") or item["citation"]["document_id"], _sha(item["citation"]["excerpt"].encode("utf-8")))
+            if key not in seen:
+                unique.append(item)
+                seen.add(key)
+        direct = [item for item in unique if item["relevance"]["tier"] == "direct_candidate"]
+        related = [item for item in unique if item["relevance"]["tier"] == "background"
+                   and (not intent["platforms"] or item["relevance"]["matched_platforms"] or item["navigation"])]
+        # In an explicit source search, pagination can recover every matched
+        # section. Automatic routing reserves up to three sections per source.
+        picked = direct[offset:offset + limit] if explicit else balanced_select(direct, intent["platforms"], limit, max_per_document=3, max_per_work=3)
+        citations = [item["citation"] for item in picked]
+        background = [item["citation"] for item in related[:3]]
+        coverage = platform_coverage(intent, citations, background)
+        return {"status": "ok" if citations else "insufficient_evidence", "question": question, "as_of": as_of,
+                "citations": citations, "background_citations": background, "document_matches": matches,
+                "query_intent": intent, "platform_coverage": coverage, "answer_brief": answer_brief(question, intent, coverage),
+                "knowledge_version": catalog["knowledge_version"], "matched_candidates": total_passages,
+                "next_offset": offset + limit if explicit and offset + limit < len(direct) else None,
+                "retrieval_scope": {"method": "document_then_passage", "explicit_scope": explicit,
+                                    "documents_matched": len(routes), "documents_read": len(matches), "document_read_limit": 8,
+                                    "passages_scored": total_passages, "whole_corpus_reviewed": False,
+                                    "source_versions_verified": True, "semantic_validation": "not_performed"},
+                "generation_policy": POLICY, "semantic_validation": "not_performed"}
+
     def ask(self, args: dict):
         question, as_of = _text(args.get("question"), "question"), _date(args.get("as_of"))
         detail, context = args.get("detail", "auto"), args.get("context") or {}
@@ -487,6 +629,9 @@ class SnapshotClient:
                     "final_evidence_coverage": {"status": "not_assessed"}}
         if args.get("focus_citation_id"):
             ref = self._resolve(_text(args["focus_citation_id"], "focus_citation_id", 512))
+            if is_navigation(ref):
+                return {**result, "status": "insufficient_evidence", "answer_kind": "evidence_packet", "background_citations": [ref],
+                        "answer_markdown": "所指资料是导航记录，请先定位并回读正文。", "gaps": ["导航记录不能用作正文断言证据。"]}
             if as_of and (not ref.get("published_at") or ref["published_at"] > as_of):
                 return {**result, "status": "insufficient_evidence", "answer_kind": "evidence_packet",
                         "answer_markdown": "所指来源日期未知或晚于指定时点。", "gaps": ["需要符合 as_of 的来源。"]}
@@ -503,7 +648,7 @@ class SnapshotClient:
                     src = next((x for x in curated["sources"] if claim and x["source_key"] == claim["source_key"]), None)
                     if not src or not src.get("document_id"):
                         break
-                    ref = self._citation(self._source(src["document_id"], src["source_version"]), claim["line_start"], claim["line_end"])
+                    ref = self._citation_with_assets(self._source(src["document_id"], src["source_version"]), claim["line_start"], claim["line_end"])
                     if claim["exact_quote"] not in ref["excerpt"]:
                         break
                     located[claim_id] = ref
@@ -571,6 +716,8 @@ class SnapshotClient:
             if claim.get("kind") in {"current_fact", "current_mechanism", "priority", "core_number", "guaranteed_effect", "global_ranking"}:
                 errors.append("不能据此批准当前事实、机制、优先级、关键数字、全球排名或效果保证")
             refs = [resolved[value] for value in (claim_ids if isinstance(claim_ids, list) else []) if resolved.get(value)]
+            if any(is_navigation(ref) for ref in refs):
+                errors.append("导航或工作记录不能升级为正文证据")
             reviewed = next((c for ref in refs for c in ref["reviewed_claims"] if c["claim_id"] == claim.get("reviewed_claim_id") and c["allowed_use"] == allowed), None)
             quote = claim.get("exact_quote")
             if quote is not None:

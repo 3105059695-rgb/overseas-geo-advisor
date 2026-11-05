@@ -26,6 +26,8 @@ PUBLIC_META_FIELDS = (
     "title", "original_url", "published_at", "source_type", "group", "topic",
     "review_status", "classification_pending", "review_scope", "allowed_uses",
     "work_id", "publication_date_origin", "checked_at", "content_kind",
+    "source_key", "author", "authors", "original_title", "title_aliases", "publisher",
+    "retrieval_role", "source_dates", "metadata_provenance", "updated_at", "sampled_at", "collected_at",
 )
 CREDENTIAL_PATTERNS = {
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"),
@@ -139,6 +141,7 @@ def export_database(database: str | Path, output: str | Path, supplement_dir: st
         chunks = []
         for row in connection.execute("""SELECT c.*,d.meta_json FROM chunks c JOIN documents d
                 ON d.document_id=c.document_id WHERE d.active=1 AND c.source_version=d.current_version
+                AND COALESCE(json_extract(d.meta_json,'$.retrieval_role'),'source_content')!='navigation'
                 ORDER BY c.id"""):
             document_meta = json.loads(row["meta_json"])
             body = Counter(_tokens(row["excerpt"]))
@@ -157,6 +160,8 @@ def export_database(database: str | Path, output: str | Path, supplement_dir: st
         policy = {**POLICY, "retrieval": "portable_lexical_cjk_bigram_with_aliases",
                   "anonymous_writes": False, "server_freeform_generation": False}
         counts = {"documents": len(documents), "source_versions": len(versions), "chunks": len(chunks),
+                  "evidence_documents": sum(d.get("retrieval_role") != "navigation" for d in public_documents.values()),
+                  "navigation_documents": sum(d.get("retrieval_role") == "navigation" for d in public_documents.values()),
                   "independent_sources": len({row["work_id"] for row in documents}),
                   "curated_claims": sum(len(claims) for key, claims in claims_by_version.items() if key[0] in active_ids),
                   "classification_pending": sum(bool(row.get("classification_pending")) for row in public_documents.values())}
@@ -213,6 +218,8 @@ def export_database(database: str | Path, output: str | Path, supplement_dir: st
                 text_bytes += len(text.encode("utf-8"))
                 added.append(dict(file=path.name, document_id=doc_id, source_version=version, original_url=m["original_url"]))
             counts.update(documents=len(public_documents), source_versions=len(versions)+len(added), chunks=len(chunks),
+                          evidence_documents=sum(d.get("retrieval_role") != "navigation" for d in public_documents.values()),
+                          navigation_documents=sum(d.get("retrieval_role") == "navigation" for d in public_documents.values()),
                           independent_sources=len({d["work_id"] for d in public_documents.values()}))
             catalog["groups"] = dict(sorted(groups.items()))
             catalog["knowledge_version"] = hashlib.sha256(encode({"base": catalog["knowledge_version"], "supplements": added})).hexdigest()

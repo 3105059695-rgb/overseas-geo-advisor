@@ -118,6 +118,22 @@ class ExportRemoteTests(unittest.TestCase):
         export_database(self.db, self.output, notes)
         self.assertEqual(self._json("catalog.json")["knowledge_version"], version)
 
+    def test_export_preserves_metadata_provenance_and_excludes_navigation_postings(self):
+        record = self.vault / "01_检索范围与收录说明.md"
+        record.write_text("# 工作记录\n\n仅导航词", "utf-8")
+        self.kb.build(self.vault)
+        report = export_database(self.db, self.output)
+        self.assertEqual(report["counts"]["documents"], 2)
+        self.assertEqual(report["counts"]["evidence_documents"], 1)
+        self.assertEqual(report["counts"]["navigation_documents"], 1)
+        catalog = self._json("catalog.json")
+        source = next(d for d in catalog["documents"].values() if d["retrieval_role"] == "source_content")
+        self.assertEqual(source["metadata_provenance"]["original_url"]["line"], 3)
+        self.assertEqual(source["source_dates"][0]["kind"], "published")
+        nav = next(d for d in catalog["documents"].values() if d["retrieval_role"] == "navigation")
+        self.assertTrue(self._json(f"documents/{nav['document_id']}/{nav['current_version']}.json")["text"])
+        self.assertFalse(any(c["document_id"] == nav["document_id"] for c in self._json("chunks.json")))
+
 
 if __name__ == "__main__":
     unittest.main()
