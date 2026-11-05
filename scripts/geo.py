@@ -1,4 +1,4 @@
-"""GEO entry: public remote retrieval by default; explicit local configuration remains supported."""
+"""GEO entry: query the public GitHub snapshot unless local or legacy MCP is explicit."""
 from __future__ import annotations
 
 import argparse
@@ -52,20 +52,29 @@ def main(argv=None) -> int:
     if remote and explicit_local:
         return emit({'status': 'error', 'error': '--remote 不能与 --local 或 --config 同时使用'}, 2)
     if not argv:
-        return emit({'status': 'ready', 'default': 'remote_unless_local_configured', 'commands': ['status', 'ask', 'search', 'read', 'browse', 'check', 'remote-config', 'mcp-config', 'setup'], 'help': '--remote ask --question "海外信源怎么分？"；公开服务无需导入资料。'})
+        mode = 'local' if explicit_local else 'legacy_mcp' if remote else 'github_snapshot'
+        return emit({'status': 'ready', 'default': mode,
+                     'commands': ['status', 'ask', 'search', 'read', 'browse', 'check', 'workflow'],
+                     'help': 'ask --question "海外信源怎么分？"；默认直接读取公开 GitHub 快照，无需账号、导入资料或本地库。维护本地资料使用 --local 或 --config；--remote 兼容旧 MCP。'})
     command, extra = argv[0], argv[1:]
     scripts = Path(__file__).resolve().parent
+    if command == 'workflow':
+        from geo_workflow import main as workflow_main
+        return workflow_main(extra)
     if command == 'remote-config':
         if extra:
             return emit({'status': 'error', 'error': 'remote-config 不接受其他参数；替换地址可设置 GEO_MCP_URL。'}, 2)
         from geo_remote import remote_config
         return emit(remote_config())
-    use_remote = remote or (not explicit_local and command not in {'setup', 'build', 'review'} and not os.environ.get('GEO_KB_DB') and not cfg_path.is_file())
-    if use_remote:
-        from geo_remote import main as remote_main
+    if not explicit_local:
+        from geo_remote import DEFAULT_URL, main as remote_main
         if command in {'setup', 'build', 'review'}:
-            return emit({'status': 'error', 'error': '公开远程知识库不开放构建或写入核对记录；本地资料管理请使用 --local。'}, 2)
-        return remote_main([command, *extra])
+            return emit({'status': 'error', 'error': '公开快照只读；本地资料管理请显式使用 --local 或 --config。'}, 2)
+        if remote:
+            return remote_main(['--transport', 'mcp', command, *extra])
+        # Select the author's snapshot explicitly. Existing local configs and a
+        # stale/custom GEO_MCP_URL must not redirect or block ordinary users.
+        return remote_main(['--transport', 'github', '--url', DEFAULT_URL, command, *extra])
     if command == 'setup':
         parser = argparse.ArgumentParser(description='Connect authorized local Markdown; source folder is read-only.')
         parser.add_argument('--vault', required=True)

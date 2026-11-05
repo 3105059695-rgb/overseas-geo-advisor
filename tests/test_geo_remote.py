@@ -132,14 +132,15 @@ class RemoteTests(unittest.TestCase):
                 geo_remote.validate_url(url)
         self.assertEqual(geo_remote.validate_url('https://example.org/mcp'), 'https://example.org/mcp')
 
-    def test_fresh_entry_uses_remote_and_creates_no_local_config(self):
+    def test_explicit_remote_entry_uses_mcp_and_creates_no_local_config(self):
         with fixture() as (_, url), tempfile.TemporaryDirectory() as td:
             cfg = Path(td) / 'absent.json'
             env = dict(os.environ, GEO_ADVISOR_CONFIG=str(cfg), GEO_MCP_URL=url)
             env.pop('GEO_KB_DB', None)
-            run = subprocess.run([sys.executable, '-B', '-X', 'utf8', str(ROOT / 'scripts/geo.py'), 'ask', '--question', '海外信源'], env=env, capture_output=True, text=True, encoding='utf-8')
+            run = subprocess.run([sys.executable, '-B', '-X', 'utf8', str(ROOT / 'scripts/geo.py'), '--remote', 'ask', '--question', '海外信源'], env=env, capture_output=True, text=True, encoding='utf-8')
             self.assertEqual(run.returncode, 0, run.stderr + run.stdout)
             self.assertEqual(json.loads(run.stdout)['status'], 'partial')
+            self.assertEqual(json.loads(run.stdout)['transport']['attempted'], ['mcp'])
             self.assertFalse(cfg.exists())
             self.assertEqual(list(Path(td).iterdir()), [])
 

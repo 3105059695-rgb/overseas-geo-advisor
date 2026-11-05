@@ -1,6 +1,6 @@
 interface:
   display_name: "海外 GEO 知识顾问"
-  short_description: "查询共享 GEO 知识库，MCP 不可达时可读 GitHub 快照，按原文讲解且无需导入资料"
-  default_prompt: "使用 $overseas-geo-advisor 按我问的平台和问题检索共享知识库，回读原文后用小白能懂的中文直接回答，关键结论就近附来源和支持摘录；MCP 不可用时用 GitHub 快照，并如实说明依据与缺口。"
+  short_description: "直接查询公开 GitHub GEO 资料，按原文解释，无需账号、导入资料或 MCP"
+  default_prompt: "使用 $overseas-geo-advisor，直接查询维护者的公开 GitHub 快照，不配置或调用 MCP。你自行理解我的问题、准备分析文件并执行关键词多子查询，回读后判断证据、必要时联网核查，再生成和检查答案。用小白能懂的中文直接回答，保留来源、日期与适用范围；默认向量未启用，不要声称三路都运行，也不要让我手填 JSON 或准备资料。"
 policy:
   allow_implicit_invocation: true

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import geo_remote
+import geo
 
 
 class SnapshotFailure(Exception):
@@ -80,6 +81,37 @@ class FallbackTests(unittest.TestCase):
             result = geo_remote.KnowledgeClient(transport='github').call('browse_geo_topics', {})
         mcp.assert_not_called()
         self.assertEqual(result['transport']['attempted'], ['github_snapshot'])
+
+    def test_default_entry_commands_go_directly_to_author_snapshot(self):
+        cases = [(['status'], 'browse_geo_topics'), (['browse'], 'browse_geo_topics'),
+                 (['ask', '--question', 'GPT喜欢什么信源'], 'ask_geo'),
+                 (['search', '--question', '来源类型'], 'search_geo'),
+                 (['read', '--document-id', 'doc-1', '--source-version', 'v1'], 'read_geo_source')]
+        for args, tool in cases:
+            with self.subTest(args=args), patch.object(geo_remote.RemoteClient, 'call') as mcp, \
+                    patch.object(geo, 'load_config', side_effect=AssertionError('implicit local config read')), \
+                    patch.dict('os.environ', {'GEO_MCP_URL': 'not a valid URL', 'GEO_KB_DB': 'unused.sqlite3'}):
+                self.factory.reset_mock()
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = geo.main(args)
+                self.assertEqual(code, 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['transport']['requested'], 'github')
+                self.assertEqual(result['transport']['attempted'], ['github_snapshot'])
+                self.assertIsNone(result['transport']['fallback_reason'])
+                self.assertEqual(self.factory.return_value.call.call_args.args[0], tool)
+                mcp.assert_not_called()
+
+    def test_default_entry_snapshot_failure_does_not_try_old_mcp(self):
+        self.factory.return_value.call.side_effect = SnapshotFailure()
+        with patch.object(geo_remote.RemoteClient, 'call') as mcp, contextlib.redirect_stdout(io.StringIO()) as output:
+            code = geo.main(['status'])
+        self.assertEqual(code, 2)
+        result = json.loads(output.getvalue())
+        self.assertFalse(result['knowledge_lookup_completed'])
+        self.assertEqual(result['transport']['attempted'], ['github_snapshot'])
+        mcp.assert_not_called()
 
     def test_explicit_mcp_does_not_hide_failure(self):
         with patch.object(geo_remote.RemoteClient, 'call', side_effect=geo_remote.RemoteError('http_error','403',403)):

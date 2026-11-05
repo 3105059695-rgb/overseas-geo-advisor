@@ -33,6 +33,9 @@ BLOB_BASE = f"https://github.com/{REPOSITORY}/blob/{DATA_COMMIT}/data/"
 MAX_ASSET_BYTES = 8 * 1024 * 1024
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 MAX_MEMORY_BYTES = 24 * 1024 * 1024
+MAX_CANDIDATES_PER_DOCUMENT = 3
+MAX_CANDIDATES_PER_WORK = 3
+MAX_RESULTS_PER_GROUP = 2
 POLICY = {
     "mode": "knowledge_base_only", "retrieval": "platform_anchored_lexical_with_source_relation_hints",
     "embedding_search": False, "server_freeform_generation": False,
@@ -301,6 +304,11 @@ class SnapshotClient:
         claims = [c for c in d.get("reviewed_claims", []) if c["line_start"] >= start and c["line_end"] <= end
                   and isinstance(c.get("exact_quote"), str) and c["exact_quote"] in excerpt]
         path = f"documents/{d['document_id']}/{d['source_version']}.json"
+        # Dates describe different events. Preserve supplied metadata verbatim;
+        # never turn publication or collection time into an observation date.
+        temporal = {key: meta[key] for key in (
+            "publication_date_origin", "observed_at", "collected_at", "observation_period",
+            "experiment_date", "data_start_date", "data_end_date", "product_mode", "limitations") if key in meta}
         return {"citation_id": f"{d['document_id']}@{d['source_version']}:L{start}-L{end}",
                 "document_id": d["document_id"], "source_version": d["source_version"], "work_id": meta.get("work_id"),
                 "title": meta.get("title"), "line_start": start, "line_end": end, "excerpt": excerpt,
@@ -310,7 +318,7 @@ class SnapshotClient:
                 "checked_at": meta.get("checked_at"), "content_kind": meta.get("content_kind"),
                 "allowed_uses": sorted({c["allowed_use"] for c in claims}) if claims else ["reading_lead"],
                 "reviewed_claims": claims, "review_scope": ["exact_excerpt_checked"] if claims else [],
-                "independent_fact_verification": False, "expert_approval": False}
+                "independent_fact_verification": False, "expert_approval": False, **temporal}
 
     def _resolve(self, citation_id: str):
         m = re.fullmatch(r"(doc-[a-f0-9]{20})@([a-f0-9]{64}):L(\d+)-L(\d+)", citation_id or "")
@@ -399,7 +407,7 @@ class SnapshotClient:
         # A broad source word alone cannot qualify a passage for a named engine.
         anchor_hits = {p: {listing[i] for t in terms for listing in [postings.get(t, [])]
                            for i in range(0, len(listing), 3)} for p, terms in platform_terms.items()}
-        preliminary, seen, per_document = [], set(), defaultdict(int)
+        preliminary, seen, per_document, per_work = [], set(), defaultdict(int), defaultdict(int)
         for chunk_id, score in ranked:
             chunk = by_id[chunk_id]
             if chunk["content_hash"] in seen or (original and not matched[chunk_id] and not intent["platforms"]):
@@ -407,14 +415,19 @@ class SnapshotClient:
             engines = [p for p, hits in anchor_hits.items() if chunk_id in hits]
             if intent["platforms"] and not engines:
                 continue
-            # Avoid one long paper exhausting the bounded context-read budget.
-            if intent["platforms"] and per_document[chunk["document_id"]] >= 3:
+            # Every query has the same document/work diversity bound, including
+            # generic queries and multiple translated copies of one paper.
+            work_id = c["documents"][chunk["document_id"]].get("work_id") or chunk["document_id"]
+            if (per_document[chunk["document_id"]] >= MAX_CANDIDATES_PER_DOCUMENT
+                    or per_work[work_id] >= MAX_CANDIDATES_PER_WORK):
                 continue
             seen.add(chunk["content_hash"])
             per_document[chunk["document_id"]] += 1
+            per_work[work_id] += 1
             preliminary.append({"id": chunk_id, "chunk": chunk, "score": score,
+                                "work_id": work_id,
                                 "relevance": {"direct_platforms": engines}})
-        probe_limit = 40 if intent["platforms"] else limit
+        probe_limit = 40 if intent["platforms"] else min(40, max(limit * 3, 12))
         selected = balanced_select(preliminary, intent["platforms"], probe_limit)
         def cite(item):
             chunk = item["chunk"]
@@ -426,22 +439,29 @@ class SnapshotClient:
         with ThreadPoolExecutor(max_workers=4) as pool:
             located = list(pool.map(cite, selected))
         direct = [item for item in located if item["relevance"]["tier"] == "direct_candidate"]
-        # Prefer narrow official-document notes for product mechanisms, but
-        # their status remains a candidate, not an independently approved fact.
-        if intent["kind"] == "platform_sources":
+        preference_query = "observed_preferences" in intent["source_aspects"] and "retrieval_channels" not in intent["source_aspects"]
+        if preference_query:
+            direct.sort(key=lambda x: x["relevance"]["relation_type"] != "observed_preference")
+        # Official crawler notes describe mechanisms, not observed preference.
+        elif intent["kind"] == "platform_sources":
             direct.sort(key=lambda x: x["citation"].get("source_type") != "official_document_note")
         related = [item for item in located if item["relevance"]["tier"] == "background"
                    and item["relevance"]["matched_platforms"]]
-        citations = [x["citation"] for x in balanced_select(direct, intent["platforms"], limit)]
-        background = [x["citation"] for x in balanced_select(related, intent["platforms"], 3, "matched_platforms")]
+        citations = [x["citation"] for x in balanced_select(direct, intent["platforms"], limit,
+                                                           max_per_document=MAX_RESULTS_PER_GROUP, max_per_work=MAX_RESULTS_PER_GROUP)]
+        background = [x["citation"] for x in balanced_select(related, intent["platforms"], 3, "matched_platforms",
+                                                            max_per_document=MAX_RESULTS_PER_GROUP, max_per_work=MAX_RESULTS_PER_GROUP)]
         coverage = platform_coverage(intent, citations, background)
         return {"status": "ok" if citations else "insufficient_evidence", "question": question, "as_of": as_of,
                 "citations": citations, "background_citations": background, "query_intent": intent,
                 "platform_coverage": coverage, "answer_brief": answer_brief(question, intent, coverage),
                 "knowledge_version": c["knowledge_version"], "matched_candidates": len(ranked),
-                "query_terms": expanded, "retrieval_limit": "通用问题最多24词；点名平台最多40词、40片段回读。",
+                "query_terms": expanded, "retrieval_limit": "通用问题最多24词；点名平台最多40词；各查询最多40片段回读，每文档/同源组最多3候选、2条直接结果。",
                 "retrieval_scope": {"lexical_candidates": len(ranked), "anchored_candidates": len(preliminary),
                                     "passages_read": len(located), "read_limit": probe_limit,
+                                    "per_document_candidate_limit": MAX_CANDIDATES_PER_DOCUMENT,
+                                    "per_work_candidate_limit": MAX_CANDIDATES_PER_WORK,
+                                    "per_group_result_limit": MAX_RESULTS_PER_GROUP,
                                     "whole_corpus_reviewed": False, "relevance_method": "lexical_relation_hint_not_semantic_validation"},
                 "generation_policy": POLICY, "semantic_validation": "not_performed"}
 
@@ -570,6 +590,14 @@ class SnapshotClient:
                 "semantic_validation": "not_performed", "answer_approved": False, "review_persisted": False,
                 "notice": "结构检查通过不代表断言正确。还须核对原文是否支持表述与主结论。"}
 
+    def transport_report(self, integrity_verified: bool = False) -> dict:
+        """Report actual fetch/cache counters without performing another request."""
+        return {"mode": "github_snapshot", "commit": DATA_COMMIT,
+                "manifest_sha256": MANIFEST_SHA256,
+                "source_integrity_verified": bool(integrity_verified),
+                "cache_limit_bytes": MAX_CACHE_BYTES, "query_uploaded": False,
+                "mcp_connected": False, **self._stats}
+
     def call(self, name: str, arguments: dict) -> dict:
         handlers = {"browse_geo_topics": self.browse, "search_geo": self.search, "read_geo_source": self.read,
                     "ask_geo": self.ask, "check_geo_answer": self.check}
@@ -583,7 +611,5 @@ class SnapshotClient:
             result = {"status": "not_found", "error_code": "source_version_missing", "message": str(exc)}
         except (InputError, TypeError) as exc:
             result = {"status": "error", "error_code": "invalid_argument", "message": str(exc)}
-        result["snapshot_transport"] = {"mode": "github_snapshot", "commit": DATA_COMMIT,
-                                        "manifest_sha256": MANIFEST_SHA256, "source_integrity_verified": result.get("status") not in {"error", "not_found"},
-                                        "cache_limit_bytes": MAX_CACHE_BYTES, "query_uploaded": False, **self._stats}
+        result["snapshot_transport"] = self.transport_report(result.get("status") not in {"error", "not_found"})
         return result

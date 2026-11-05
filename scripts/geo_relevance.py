@@ -36,6 +36,16 @@ def platforms_in(text: str) -> list[str]:
 
 def query_intent(question: str) -> dict:
     platforms = platforms_in(question)
+    alias_assumptions = []
+    # Bare GPT is a common shorthand in a consumer-source question. It is not
+    # an alias for a model family, research experiment, or developer API.
+    if ("ChatGPT" not in platforms
+            and re.search(r"(?<![a-z0-9_-])gpt(?![a-z0-9_-])", question, re.I)
+            and re.search(r"信源|来源|引用|网站|联网|偏好|喜欢|\b(?:sources?|citations?|prefer\w*|websites?)\b", question, re.I)
+            and not re.search(r"训练|预训练|模型|论文|研究|实验|架构|\b(?:api|model|research|paper|training|architecture)\b", question, re.I)):
+        platforms.append("ChatGPT")
+        alias_assumptions.append({"input": "GPT", "resolved_platform": "ChatGPT",
+                                  "reason": "在本题信源语境中按 ChatGPT 口语简称检索，不代表 GPT 模型或 API。"})
     source_words = bool(re.search(r"信源|来源|引用|信息.{0,6}(?:来自|哪里)|从哪|哪(?:里|些网站)|搜索渠道|联网|"
                                   r"(?:喜欢|偏好|偏向|更常).{0,20}(?:网站|官网|网页|社区|论坛|新闻|Reddit|Wikipedia|维基)|"
                                   r"\b(?:sources?|citations?|cites?|search|retriev\w*|prefer\w*)\b", question, re.I))
@@ -63,7 +73,10 @@ def query_intent(question: str) -> dict:
             aspects = ["content_sources", "observed_preferences"]
         else:
             aspects = ["retrieval_channels", "content_sources", "observed_preferences"]
-    return {"kind": kind, "platforms": platforms, "source_aspects": aspects, "platform_selection": selection}
+    requested_mode = "api" if re.search(r"\bapi\b", question, re.I) else "research_model" if re.search(
+        r"模型|论文|研究|实验|\b(?:model|research|paper|experiment)\b", question, re.I) else "consumer_or_unspecified"
+    return {"kind": kind, "platforms": platforms, "source_aspects": aspects, "platform_selection": selection,
+            "platform_alias_assumptions": alias_assumptions, "requested_mode": requested_mode}
 
 
 def entity_terms(intent: dict) -> list[str]:
@@ -81,7 +94,7 @@ _SOURCE_RELATION = re.compile(
     r"retriev\w*|cit(?:e|es|ed|ing)|sources?\s+(?:from|include|are)|"
     r"brave|bing|reddit|wikipedia)\b|\bsearch(?:es|ing)?\s+(?:the\s+|public\s+)?(?:web|internet|x\b)|"
     r"\bcitations?\s+(?:to|from|include)\b|维基百科|Claude-User|Claude-SearchBot", re.I)
-_PREFERENCE = re.compile(r"引用|信源|来源|\b(?:sources?|citat\w*|cited|cite|domains?)\b", re.I)
+_PREFERENCE = re.compile(r"引用|信源|来源|官网|网站|新闻|域名|维基|\b(?:sources?|citat\w*|cited|cite|domains?|reddit|wikipedia)\b", re.I)
 _STUDY = re.compile(r"占比|比例|份额|样本|实验|调查|观测|研究|统计|\b(?:study|sample|observed|percentage|share|experiment|survey)\b", re.I)
 _OPINION = re.compile(r"建议.{0,30}(?:开放|推出|发布)|希望.{0,30}(?:开放|推出|发布)|可以成为|应该成为|"
                       r"\b(?:could be|should launch|should open|wish|please launch|open grok search)\b", re.I)
@@ -89,13 +102,69 @@ _OPERATOR = re.compile(r"(?:粘贴|交给|复制到|上传到|上传给|让|使�
                        r"(?:claude|grok).{0,12}(?:seo|插件|机器人|智能体|agent)|\bgrok\s+bot\b|"
                        r"\b(?:paste|give|ask|use|using|with).{0,30}(?:claude|grok).{0,35}(?:write|draft|extract|build|seo|agent)\b", re.I)
 
+_OBSERVATION = re.compile(r"\d+(?:\.\d+)?\s*%|占比|比例|份额|引用率|频率|排名|最常|最多|更多|更常|偏好|偏向|倾向|"
+                          r"\b(?:prefer\w*|most|more|less|frequen\w*|top|rank\w*|dominant|percentage|share)\b", re.I)
+_CRAWL = re.compile(r"抓取|爬虫|\bcrawl\w*\b|searchbot", re.I)
+_CITATION_ACTION = re.compile(r"引用|被引|\b(?:citat\w*|cited|cites?|citing)\b", re.I)
+_TRAINING = re.compile(r"训练|预训练|\b(?:training|pretraining|pre-training|trained)\b|gptbot|claudebot", re.I)
+_OPTIMIZATION = re.compile(r"优化|优化内容|提高.{0,10}引用|提升.{0,10}引用|\b(?:optimi[sz]\w*|seo|geo strategies)\b", re.I)
+_LIMITATION = re.compile(r"局限|限制|仅限|仅适用|不代表|不能|无法|未知|未披露|不适用|样本|实验|测试期间|"
+                         r"\b(?:limit\w*|only|cannot|does not|do not|not necessarily|unknown|sample|experiment|caveat)\b", re.I)
+
+
+def _body_units(text: str) -> list[str]:
+    # Headings and links may nominate a document but cannot support a claim.
+    lines = [line for line in text.splitlines()
+             if not re.match(r"^#{1,6}\s|^[-*]?\s*(?:原文|来源|原标题|原帖|source|original_url|title)\s*[:：]", line.strip(), re.I)
+             and not re.match(r"^(?:[-*]\s*)?(?:\[\[[^\n]+\]\]|\[[^\]]+\]\([^)]+\))\s*$", line.strip())]
+    return [s.strip() for s in re.split(r"\n|(?<=[。！？!?])\s*|(?<=[.;])\s+", "\n".join(lines)) if s.strip()]
+
+
+def _relation(unit: str, context: str) -> str:
+    if _OPINION.search(unit):
+        return "background"
+    if _OPERATOR.search(unit) or _OPTIMIZATION.search(unit):
+        return "content_optimization"
+    if _TRAINING.search(unit):
+        return "training"
+    if (_PREFERENCE.search(unit) and _OBSERVATION.search(unit)
+            and (not _CRAWL.search(unit) or _CITATION_ACTION.search(unit))
+            and (_STUDY.search(context) or re.search(r"\d+(?:\.\d+)?\s*%|占比|引用率|most cited|cited most", unit, re.I))):
+        return "observed_preference"
+    if _SOURCE_RELATION.search(unit):
+        return "retrieval_channel"
+    return "background"
+
+
+def _mode(unit: str) -> str:
+    if re.search(r"\bapi\b|开发者接口", unit, re.I):
+        return "api"
+    if (re.search(r"\bgpt[- ]?\d|\blanguage models?\b|基础模型|语言模型", unit, re.I)
+            and not re.search(r"chatgpt|聊天产品|消费端", unit, re.I)):
+        return "research_model"
+    return "unspecified"
+
 
 def passage_relevance(intent: dict, title: str, text: str) -> dict:
     targets = intent["platforms"]
     # A title can nominate a document, but only the returned text may support it.
     matched = [p for p in targets if p in platforms_in(text)]
+    units = _body_units(text)
+    classified = [(unit, _relation(unit, text), _mode(unit)) for unit in units]
+    relevant_units = [(unit, relation, mode) for unit, relation, mode in classified
+                      if not targets or any(p in platforms_in(unit) for p in targets)]
+    relations = list(dict.fromkeys(relation for _, relation, _ in relevant_units if relation != "background")) or ["background"]
+    platform_relations = {p: list(dict.fromkeys(relation for unit, relation, _ in classified
+                                               if p in platforms_in(unit))) for p in matched}
+    preference_query = "observed_preferences" in intent["source_aspects"] and "retrieval_channels" not in intent["source_aspects"]
+    priority = (["observed_preference", "retrieval_channel", "training", "content_optimization", "background"]
+                if preference_query else ["training", "retrieval_channel", "observed_preference", "content_optimization", "background"])
     result = {"matched_platforms": matched, "direct_platforms": [], "tier": "background",
-              "reason": "仅有平台提及，尚未定位回答本题的信源说明。", "semantic_validation": "not_performed"}
+              "reason": "仅有平台提及，尚未定位回答本题的信源说明。", "semantic_validation": "not_performed",
+              "relation_type": next(r for r in priority if r in relations), "relation_types": relations,
+              "relation_method": "lexical_hint_not_semantic_validation", "platform_relations": platform_relations,
+              "product_modes": list(dict.fromkeys(mode for _, _, mode in relevant_units)),
+              "limitations": [unit[:1000] for unit in units if _LIMITATION.search(unit)][:8]}
     if not targets:
         return {**result, "tier": "direct_candidate", "reason": "词法匹配候选，需回读判断。"}
     if not matched:
@@ -105,24 +174,21 @@ def passage_relevance(intent: dict, title: str, text: str) -> dict:
     if _OPINION.search(title):
         return {**result, "reason": "建议或愿望类来源，不证明平台现行信源。"}
     direct = []
-    # Newlines preserve table rows; punctuation prevents an engine in one
-    # sentence from endorsing another engine's following source assertion.
-    body_lines = [line for line in text.splitlines()
-                  if not re.match(r"^#{1,6}\s|^[-*]?\s*(?:原文|来源|原标题|原帖|source|original_url|title)\s*[:：]", line.strip(), re.I)
-                  and not re.match(r"^(?:[-*]\s*)?(?:\[\[[^\n]+\]\]|\[[^\]]+\]\([^)]+\))\s*$", line.strip())]
-    units = [s.strip() for s in re.split(r"\n|(?<=[。！？!?])\s*|(?<=[.;])\s+", "\n".join(body_lines)) if s.strip()]
     for platform in matched:
-        for unit in units:
+        for unit, relation, mode in classified:
             if platform not in platforms_in(unit) or unit.endswith(("?", "？")):
                 continue
             if _OPINION.search(unit) or _OPERATOR.search(unit):
                 continue
+            if mode in {"api", "research_model"} and mode != intent.get("requested_mode"):
+                continue
             if intent["source_aspects"] == ["training_data"]:
-                useful = bool(re.search(r"训练|training", unit, re.I) and _SOURCE_RELATION.search(unit))
-            elif intent["source_aspects"] == ["observed_preferences"]:
-                useful = bool(_PREFERENCE.search(unit) and _STUDY.search(text))
+                useful = relation == "training" and bool(_SOURCE_RELATION.search(unit))
+            elif preference_query:
+                useful = relation == "observed_preference"
             else:
-                useful = bool(_SOURCE_RELATION.search(unit))
+                useful = relation in {"retrieval_channel", "observed_preference"} or bool(
+                    relation == "background" and _SOURCE_RELATION.search(unit))
                 # Names in benchmark tables and non-source overlap metrics do
                 # not answer where an engine gets information.
                 if _STUDY.search(unit) and not re.search(r"Brave|Bing|Reddit|Wikipedia|维基|新闻|社区|官网|文档|网站|网页|\b(?:web|domains?|sites?|news)\b", unit, re.I):
@@ -130,33 +196,47 @@ def passage_relevance(intent: dict, title: str, text: str) -> dict:
             if useful:
                 direct.append(platform)
                 break
-    return {**result, "direct_platforms": direct, "tier": "direct_candidate" if direct else "background",
-            "reason": "同一语句含平台及信源相关描述；须核对实际含义、模式和日期。" if direct else result["reason"]}
+    reason = "同一语句含平台及信源相关描述；须核对实际含义、模式和日期。" if direct else result["reason"]
+    if preference_query and not direct:
+        reason = "本片段未定位所问平台的观测偏好证据；搜索渠道、爬虫或可访问性只能作背景。"
+    return {**result, "direct_platforms": direct, "tier": "direct_candidate" if direct else "background", "reason": reason}
 
 
-def balanced_select(candidates: list[dict], platforms: list[str], limit: int, key: str = "direct_platforms") -> list[dict]:
+def balanced_select(candidates: list[dict], platforms: list[str], limit: int, key: str = "direct_platforms",
+                    max_per_document: int | None = None, max_per_work: int | None = None) -> list[dict]:
     """Ensure each named engine has a turn, without padding from other engines."""
-    chosen, seen = [], set()
+    chosen, seen, counts = [], set(), {"document_id": {}, "work_id": {}}
+    def group(item, field):
+        return item.get(field) or item.get("citation", {}).get(field) or item.get("chunk", {}).get(field)
+    def permitted(item):
+        return item["id"] not in seen and all(not cap or not group(item, field)
+                                             or counts[field].get(group(item, field), 0) < cap
+                                             for field, cap in (("document_id", max_per_document), ("work_id", max_per_work)))
+    def choose(item):
+        chosen.append(item)
+        seen.add(item["id"])
+        for field in counts:
+            value = group(item, field)
+            if value:
+                counts[field][value] = counts[field].get(value, 0) + 1
     if platforms:
         queues = [[c for c in candidates if p in c["relevance"][key]] for p in platforms]
         while len(chosen) < limit:
             progressed = False
             for queue in queues:
-                while queue and queue[0]["id"] in seen:
+                while queue and not permitted(queue[0]):
                     queue.pop(0)
                 if queue and len(chosen) < limit:
                     item = queue.pop(0)
-                    chosen.append(item)
-                    seen.add(item["id"])
+                    choose(item)
                     progressed = True
             if not progressed:
                 break
     for item in candidates:
         if len(chosen) >= limit:
             break
-        if item["id"] not in seen:
-            chosen.append(item)
-            seen.add(item["id"])
+        if permitted(item):
+            choose(item)
     return chosen
 
 

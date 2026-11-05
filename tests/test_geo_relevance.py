@@ -43,6 +43,54 @@ class IntentTests(unittest.TestCase):
         self.assertIn("训练数据", answer_brief("Claude 训练数据来源", training, [])["focus"])
         self.assertIn("分母", answer_brief("Grok 引用域名占比统计", shares, [])["focus"])
 
+    def test_gpt_alias_is_contextual_and_does_not_alias_research_or_api(self):
+        intent = query_intent("GPT 更喜欢引用哪些网站？")
+        self.assertEqual(intent["platforms"], ["ChatGPT"])
+        self.assertEqual(intent["kind"], "platform_sources")
+        self.assertEqual(intent["platform_alias_assumptions"][0]["input"], "GPT")
+        for question in ("GPT 模型研究的来源", "GPT API 引用来源", "GPT-4 论文训练来源", "GPT 架构"):
+            self.assertNotIn("ChatGPT", query_intent(question)["platforms"])
+
+    def test_preference_requires_observation_and_keeps_limits(self):
+        intent = query_intent("ChatGPT 喜欢引用什么网站？")
+        channel = passage_relevance(intent, "爬虫文档", "OAI-SearchBot crawls public web pages for ChatGPT search.")
+        self.assertEqual(channel["relation_type"], "retrieval_channel")
+        self.assertEqual(channel["tier"], "background")
+        crawler_share = passage_relevance(intent, "抓取统计", "Our study found ChatGPT OAI-SearchBot crawled Reddit for 28% of requests.")
+        self.assertEqual(crawler_share["relation_type"], "retrieval_channel")
+        self.assertEqual(crawler_share["tier"], "background")
+        text = "In our study, ChatGPT cited Reddit in 28% of responses. This sample only covers English shopping questions."
+        preference = passage_relevance(intent, "统计", text)
+        self.assertEqual(preference["relation_type"], "observed_preference")
+        self.assertEqual(preference["direct_platforms"], ["ChatGPT"])
+        self.assertIn("This sample only covers English shopping questions.", preference["limitations"])
+        self.assertEqual(preference["semantic_validation"], "not_performed")
+        recommendation = passage_relevance(intent, "建议", "ChatGPT should prefer citations from Reddit.")
+        self.assertEqual(recommendation["tier"], "background")
+
+    def test_product_mode_does_not_transfer_to_consumer_preference(self):
+        text = "Our experiment found ChatGPT API cited Reddit in 20% of responses."
+        consumer = passage_relevance(query_intent("ChatGPT 引用网站占比"), "统计", text)
+        self.assertEqual(consumer["tier"], "background")
+        self.assertEqual(consumer["product_modes"], ["api"])
+        api = passage_relevance(query_intent("ChatGPT API 引用网站占比"), "统计", text)
+        self.assertEqual(api["tier"], "direct_candidate")
+        research = passage_relevance(query_intent("GPT 喜欢哪些来源"), "研究", "OpenAI GPT-4 cited Reddit in 20% of responses in our experiment.")
+        self.assertEqual(research["tier"], "background")
+        self.assertEqual(research["product_modes"], ["research_model"])
+
+    def test_relation_categories_keep_training_and_optimization_separate(self):
+        intent = query_intent("ChatGPT 的信源是什么")
+        training = passage_relevance(intent, "训练", "GPTBot crawls web pages used for training OpenAI models.")
+        self.assertEqual(training["relation_type"], "training")
+        self.assertEqual(training["tier"], "background")
+        writing = passage_relevance(intent, "写作", "Use ChatGPT to optimize SEO content and cite sources.")
+        self.assertEqual(writing["relation_type"], "content_optimization")
+        self.assertEqual(writing["tier"], "background")
+        mixed = passage_relevance(query_intent("ChatGPT 来源偏好"), "比较", "ChatGPT searches web pages. In our study Claude cited Reddit in 40% of answers.")
+        self.assertEqual(mixed["relation_type"], "retrieval_channel")
+        self.assertEqual(mixed["tier"], "background")
+
     def test_mentions_and_requests_are_not_source_evidence(self):
         intent = query_intent("Claude 和 Grok 的信源是什么")
         cases = [
@@ -123,11 +171,14 @@ class RetrievalRegressionTests(unittest.TestCase):
     def test_old_context_cannot_replace_current_engine(self):
         found = self.client.call("ask_geo", {"question": "Claude 信源偏好 引用哪些来源", "context": {"question": "豆包国内官媒信源"}})
         self.assertEqual(found["query_intent"]["platforms"], ["Claude"])
-        self.assertEqual([c["title"] for c in found["citations"]], ["Claude 联网搜索"])
+        self.assertEqual(found["citations"], [])
+        self.assertIn("Claude 联网搜索", [c["title"] for c in found["background_citations"]])
+        self.assertEqual(found["answer_brief"]["missing_direct_evidence"], ["Claude"])
 
     def test_original_overseas_question_and_chinese_alias_keep_english_evidence(self):
         found = self.client.call("ask_geo", {"question": "海外的不同 AI，他们喜欢的信源是什么？"})
-        self.assertEqual({c["title"] for c in found["citations"]}, {"Claude 联网搜索", "Grok 信源"})
+        self.assertEqual(found["citations"], [])
+        self.assertTrue({"Claude 联网搜索", "Grok 信源"}.issubset({c["title"] for c in found["background_citations"]}))
         self.assertNotIn("信源引用来源信源引用来源", [c["title"] for c in found["citations"]])
         self.assertEqual(found["query_intent"]["platform_selection"], "illustrative_overseas_scope")
         aliased = self.client.call("search_geo", {"question": "克劳德的信源是什么？"})

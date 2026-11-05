@@ -1,0 +1,14 @@
+[
+  {"id":"gpt_colloquial", "question":"GPT 喜欢引用哪些信源？", "expected_task":"source_preference", "expected_platforms":["ChatGPT"], "expected_freshness":"current"},
+  {"id":"preference_paraphrase", "question":"ChatGPT 更常采信哪类网站？", "expected_task":"source_preference", "expected_platforms":["ChatGPT"], "expected_freshness":"current"},
+  {"id":"platform_followup", "question":"那 Claude 呢？", "context":{"question":"ChatGPT 喜欢引用哪些网站？"}, "expected_task":"source_preference", "expected_platforms":["Claude"], "expected_freshness":"current", "absent_platforms":["ChatGPT"]},
+  {"id":"recent_followup", "question":"那最近有没有新的数据？", "context":{"question":"ChatGPT 喜欢哪些信源？"}, "expected_task":"source_preference", "expected_platforms":["ChatGPT"], "expected_freshness":"current"},
+  {"id":"search_channel", "question":"Grok 联网时用什么搜索引擎？", "expected_task":"source_channels", "expected_platforms":["Grok"], "expected_freshness":"current"},
+  {"id":"source_categories", "question":"GEO 的信源有哪些类别？", "expected_task":"source_classification", "expected_platforms":[], "expected_freshness":"stable"},
+  {"id":"metric_definition", "question":"品牌提及率怎么算，分子和分母是什么？", "expected_task":"metric_definition", "expected_platforms":[], "expected_freshness":"stable"},
+  {"id":"recent_action", "question":"最近该怎么做 GEO，才能提高引用？", "expected_task":"practical_method", "expected_platforms":[], "expected_freshness":"current"},
+  {"id":"diagnostic_action", "question":"Perplexity 不引用我的网站，怎么优化？", "expected_task":"practical_method", "expected_platforms":["Perplexity"], "expected_freshness":"current"},
+  {"id":"historical_preference", "question":"2024年 ChatGPT 的信源偏好有哪些研究？", "expected_task":"source_preference", "expected_platforms":["ChatGPT"], "expected_freshness":"historical"},
+  {"id":"comparison", "question":"Claude 与 Grok 哪个更喜欢新闻网站？", "expected_task":"source_preference", "expected_platforms":["Claude","Grok"], "expected_freshness":"current"},
+  {"id":"mixed_metric_action", "question":"ChatGPT 引用率怎么计算，并说明怎么提高？", "expected_task":"metric_definition", "expected_tasks":["metric_definition","practical_method"], "expected_platforms":["ChatGPT"], "expected_freshness":"current"}
+]
