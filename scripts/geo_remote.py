@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 DEFAULT_URL = "https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp"
-CLIENT_VERSION = "0.3.0"
+CLIENT_VERSION = "0.4.0"
 PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOLS = {"2025-11-25", "2025-06-18", "2025-03-26"}
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024

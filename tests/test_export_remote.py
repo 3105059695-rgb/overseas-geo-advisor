@@ -94,6 +94,30 @@ class ExportRemoteTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(before[name]).hexdigest(), entry["sha256"])
             self.assertEqual(len(before[name]), entry["bytes"])
 
+    def test_supplement_preserves_archive_and_keeps_verification_date_distinct(self):
+        export_database(self.db, self.output)
+        original = self._json("catalog.json")
+        doc = next(iter(original["documents"].values()))
+        name = f"documents/{doc['document_id']}/{doc['current_version']}.json"
+        source_before = (self.output / name).read_bytes()
+        db_before = self.db.read_bytes()
+        notes = self.root / "notes"
+        notes.mkdir()
+        (notes / "claude.md").write_text("# Claude 的网页信源\n- 原文链接：https://support.claude.com/example\n- 核查日期：2026-11-05\n\n## 说明\nClaude 搜索互联网网页。\n", encoding="utf-8")
+        report = export_database(self.db, self.output, notes)
+        self.assertEqual(report["counts"]["documents"], 2)
+        self.assertEqual((self.output / name).read_bytes(), source_before)
+        self.assertEqual(self.db.read_bytes(), db_before)
+        new = self._json("catalog.json")["documents"][report["supplemental_notes"][0]["document_id"]]
+        self.assertIsNone(new["published_at"])
+        self.assertEqual(new["checked_at"], "2026-11-05")
+        self.assertEqual(new["source_type"], "official_document_note")
+        token = self._json(f"index/{token_shard('claude'):02x}.json")["claude"]
+        self.assertTrue(token)
+        version = self._json("catalog.json")["knowledge_version"]
+        export_database(self.db, self.output, notes)
+        self.assertEqual(self._json("catalog.json")["knowledge_version"], version)
+
 
 if __name__ == "__main__":
     unittest.main()

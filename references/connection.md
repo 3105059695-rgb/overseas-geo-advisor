@@ -31,7 +31,7 @@ python -B -X utf8 "<skill>/scripts/geo.py" --remote read --document-id "<真实I
 
 没有本地配置时可省略 `--remote`；已有本地配置时保留本地行为，`--remote` 则明确强制远程。错误的旧配置不会静默切换资料库。
 
-v0.3.0 支持三种方式，参数放在 `status`、`ask` 等子命令之前：
+脚本支持三种方式，参数放在 `status`、`ask` 等子命令之前：
 
 | 参数 | 行为 |
 |---|---|
@@ -43,11 +43,13 @@ v0.3.0 支持三种方式，参数放在 `status`、`ask` 等子命令之前：
 
 ```text
 python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github status
-python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github ask --question "海外信源怎么分？"
+python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github ask --question "Claude 和 Grok 联网回答时分别从哪里找资料、引用什么来源？"
 python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github read --document-id "<上一步真实ID>" --source-version "<上一步真实版本>" --start-line <真实起始行> --end-line <真实结束行>
 ```
 
 以 `transport.used` 报告实际通道：`mcp` 为 MCP 查询，`github_snapshot` 为 GitHub 快照查询。备用通道可用不等于 MCP 已注册或已连接。验证应包含查询和原文回读，不只是查看仓库里的资料数量声明。
+
+确认连接后还要检查是否对题：分别查看 Claude 与 Grok 的 `platform_coverage`，回读 `citations` 中与各平台对应的原文，`background_citations` 不充当产品事实。比较查询没覆盖某个平台时，单独检索该平台。最后给出一句直接回答并附真正支持它的原文和链接；不能把“有结果”当作“正确回答”。可直接使用 [README 中的安装与使用提示词](../README.md#最简单的使用方式)。
 
 备用模式通过 HTTPS GET 按需读取公开的 catalog、索引分片和所需原文；固定到本版的数据 commit，按完整性清单校验文件及正文版本。它不需要用户导入数据，不下载整个数据分支、不创建 SQLite，自动缓存最多 32 MiB。GitHub 也不可达时仍会如实失败。
 
@@ -87,7 +89,7 @@ python -B -X utf8 "<skill>/scripts/geo_remote.py" --url "https://example.org/api
 - MCP 超时：默认 `auto` 尝试备用通道；已确认不可达时直接使用 `github`，避免每次重复等待。两个通道都失败时保留错误，不声称已根据知识库回答。
 - 让用户换 Wi-Fi：若代码运行在 AI 平台云端，用户本地 Wi-Fi 通常不会改变该执行环境的出口；先检查实际通道，而非要求用户反复换网络。
 - GitHub 查询可用：沿用该通道继续提问、读取和核对，不要求用户安装数据库，不宣称 MCP 已连通。
-- 结果不相关：缩短问题，增加平台、业务、时间或英文术语，拆开多个子问题。
+- 结果不相关：确认本地 Skill 与工具返回版本；核对 `query_intent` 是否理解用户原问题，按平台拆开并补充对应英文术语。不能用背景候选或其他平台数据填满答案；有限检索无直接证据就明确本次缺口。
 - 分类资料不能支撑优先级：另找比较证据和业务条件，不用模型经验补齐。
 
 ## 可选：自己的本地资料

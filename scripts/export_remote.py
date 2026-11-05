@@ -17,7 +17,7 @@ import re
 import sqlite3
 from typing import Any
 
-from geo_kb import EXPANSIONS, POLICY, SESSION_REVIEW_ORIGIN, STOP_WORDS, _tokens
+from geo_kb import EXPANSIONS, POLICY, SESSION_REVIEW_ORIGIN, STOP_WORDS, _tokens, _metadata, _segments
 
 SCHEMA_VERSION = 1
 SHARD_COUNT = 128
@@ -25,7 +25,7 @@ SNIPPET_CHARS = 320
 PUBLIC_META_FIELDS = (
     "title", "original_url", "published_at", "source_type", "group", "topic",
     "review_status", "classification_pending", "review_scope", "allowed_uses",
-    "work_id", "publication_date_origin",
+    "work_id", "publication_date_origin", "checked_at", "content_kind",
 )
 CREDENTIAL_PATTERNS = {
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED )?PRIVATE KEY-----"),
@@ -64,7 +64,7 @@ def scan_text(text: str, locator: str) -> list[dict]:
             if (matches := pattern.findall(text))]
 
 
-def export_database(database: str | Path, output: str | Path) -> dict:
+def export_database(database: str | Path, output: str | Path, supplement_dir: str | Path | None = None) -> dict:
     database = Path(database).resolve()
     output = Path(output).resolve()
     if not database.is_file():
@@ -170,8 +170,59 @@ def export_database(database: str | Path, output: str | Path) -> dict:
                               "average_token_count": sum(c["token_count"] for c in chunks) / max(len(chunks), 1)},
                    "document_path_template": "/data/documents/{document_id}/{source_version}.json",
                    "curated": "/data/curated.json"}
+        added = []
+        if supplement_dir is not None:
+            # Add narrowly scoped, maintained source notes without editing the
+            # owner's SQLite index or replacing any archived source/version.
+            supplement = Path(supplement_dir).resolve(strict=True)
+            if not supplement.is_dir():
+                raise ValueError("Supplement path must be a directory")
+            for path in sorted(supplement.glob("*.md")):
+                text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+                if scan_text(text, path.name):
+                    raise ValueError("Credential pattern in supplemental source: " + path.name)
+                relative = "05_全流程与基础/官方信源说明/" + path.name
+                doc_id = "doc-" + hashlib.sha256(relative.encode()).hexdigest()[:20]
+                if doc_id in public_documents:
+                    raise ValueError("Supplement would replace an indexed source: " + path.name)
+                version = hashlib.sha256(text.encode()).hexdigest()
+                m = _metadata(text, relative)
+                if not m.get("original_url"):
+                    raise ValueError("Supplement must identify its original source: " + path.name)
+                checked = re.search(r"核查日期[：:]\s*(\d{4}-\d{2}-\d{2})", text)
+                m.update(source_type="official_document_note", content_kind="Chinese source note, not full original",
+                         checked_at=checked[1] if checked else None, group="05", topic="AI平台的信源与引用",
+                         classification_pending=False, review_status="source_note_not_expert_approved",
+                         review_scope=[], allowed_uses=["reading_lead"],
+                         work_id="url-" + hashlib.sha256(m["original_url"].encode()).hexdigest()[:20])
+                document = dict(document_id=doc_id, source_version=version, text=text,
+                                line_count=len(text.splitlines()), metadata=m, reviewed_claims=[])
+                file_payloads[f"documents/{doc_id}/{version}.json"] = encode(document)
+                public_documents[doc_id] = dict(m, document_id=doc_id, current_version=version,
+                                                versions={version: document["line_count"]}, line_count=document["line_count"])
+                for start, end, excerpt, heading in _segments(text):
+                    chunk_id = max((x["id"] for x in chunks), default=0) + 1
+                    body, title = Counter(_tokens(excerpt)), Counter(_tokens(m["title"] + " " + heading))
+                    for token in sorted(body.keys() | title.keys()):
+                        shards[token_shard(token)][token].extend((chunk_id, body.get(token, 0), title.get(token, 0)))
+                    chunks.append(dict(id=chunk_id, document_id=doc_id, source_version=version, line_start=start,
+                                       line_end=end, heading=heading, snippet=excerpt[:SNIPPET_CHARS],
+                                       content_hash=hashlib.sha256(re.sub(r"\s+", " ", excerpt).strip().encode()).hexdigest(),
+                                       token_count=sum(body.values())))
+                groups["05"] += 1
+                text_bytes += len(text.encode("utf-8"))
+                added.append(dict(file=path.name, document_id=doc_id, source_version=version, original_url=m["original_url"]))
+            counts.update(documents=len(public_documents), source_versions=len(versions)+len(added), chunks=len(chunks),
+                          independent_sources=len({d["work_id"] for d in public_documents.values()}))
+            catalog["groups"] = dict(sorted(groups.items()))
+            catalog["knowledge_version"] = hashlib.sha256(encode({"base": catalog["knowledge_version"], "supplements": added})).hexdigest()
+            catalog["supplemental_notes"] = added
+            catalog["search"]["average_token_count"] = sum(x["token_count"] for x in chunks) / max(len(chunks), 1)
+            file_payloads["chunks.json"] = encode(chunks)
+            for index, shard in enumerate(shards):
+                file_payloads[f"index/{index:02x}.json"] = encode(shard)
         file_payloads["catalog.json"] = encode(catalog)
-        manifest = {"schema_version": SCHEMA_VERSION, "knowledge_version": meta.get("knowledge_version"),
+        manifest = {"schema_version": SCHEMA_VERSION, "knowledge_version": catalog["knowledge_version"],
                     "files": {name: {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
                               for name, payload in sorted(file_payloads.items())}}
         file_payloads["manifest.json"] = encode(manifest)
@@ -182,7 +233,7 @@ def export_database(database: str | Path, output: str | Path) -> dict:
             temporary = target.with_name(target.name + ".tmp")
             temporary.write_bytes(payload)
             temporary.replace(target)
-        return {"status": "ok", "counts": counts, "knowledge_version": meta.get("knowledge_version"),
+        return {"status": "ok", "counts": counts, "knowledge_version": catalog["knowledge_version"], "supplemental_notes": added,
                 "files": len(file_payloads), "source_text_bytes": text_bytes,
                 "output_bytes": sum(map(len, file_payloads.values())),
                 "catalog_bytes": len(file_payloads["catalog.json"]), "chunks_bytes": len(file_payloads["chunks.json"]),
@@ -201,8 +252,9 @@ def main() -> None:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Directory that becomes the public /data directory")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--supplement-dir", type=Path, help="Maintained Markdown source notes to add without changing SQLite")
     args = parser.parse_args()
-    report = export_database(args.db, args.output)
+    report = export_database(args.db, args.output, args.supplement_dir)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_bytes(encode(report))

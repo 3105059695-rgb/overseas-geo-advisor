@@ -1,4 +1,4 @@
-# v0.3 实现范围与接口
+# v0.4 实现范围与接口
 
 ## 组成与来源
 
@@ -6,7 +6,7 @@
 
 普通用户无需本地资料。维护者更新源资料后需重新导出和发布云端快照，不是自动实时同步。原文保留版本与行号，历史回读不能静默改用新版本。
 
-v0.3 的客户端增加 GitHub 快照通道，远程 MCP 本身可以继续报告 v0.2.0。备用模式在使用者的脚本执行环境中检索按需下载的公开索引，并读取不可变原文；不依靠模型记忆，也不要求用户事先准备资料。
+客户端保留 GitHub 快照通道。备用模式在使用者的脚本执行环境中检索按需下载的公开索引，并读取不可变原文；不依靠模型记忆，也不要求用户事先准备资料。v0.4 在共享检索中增加命名平台约束、信源问题的候选分层和答题提示；服务版本与客户端版本分别以实际响应为准。
 
 ## 通道选择与报告
 
@@ -26,7 +26,7 @@ CLI 参数 `--transport auto|mcp|github` 放在子命令之前，例如 `geo.py 
 
 `fallback_reason` 是自动切换时的记录，手动选择 `github` 不代表曾尝试连接 MCP。`transport.used=mcp` 与 `github_snapshot` 必须如实区分。通道状态不等于证据充分：仍要检查业务结果中的 `status`、`gaps` 和引用。
 
-备用通道的数据 commit 固定为本版发布值（当前为 `c548b2ef186d75e8119ce23cda55f6fe87dbae0b`）。通过清单哈希验证索引与文档，原文另按 `source_version` 校验文本和行数。按需缓存最多 32 MiB，不克隆全量数据分支，不创建本地 SQLite 或导入向导。完整性失败不能通过换版本静默掩盖。
+备用通道的数据 commit 固定为本版发布值，以 `scripts/geo_snapshot.py` 中的 `DATA_COMMIT` 及工具返回的 `snapshot_transport.commit` 为准。通过清单哈希验证索引与文档，原文另按 `source_version` 校验文本和行数。按需缓存最多 32 MiB，不克隆全量数据分支，不创建本地 SQLite 或导入向导。完整性失败不能通过换版本静默掩盖。
 
 ## 远程工具
 
@@ -38,7 +38,22 @@ CLI 参数 `--transport auto|mcp|github` 放在子命令之前，例如 `geo.py 
 | `browse_geo_topics` | 资料统计、分类、目录和当前能力 |
 | `check_geo_answer` | `bundle`；核对真实引用、版本、摘录和允许用途，不验证语义正确性 |
 
+对于识别到的特定平台信源问题，检索结果还包含：
+
+| 字段 | 含义与使用方式 |
+|---|---|
+| `query_intent` | `kind`、`platforms`、`source_aspects`；程序识别的问题对象与侧重点，不能覆盖用户真实意图 |
+| `citations[].relevance` | `matched_platforms`、`direct_platforms`、`tier`、`reason`；`direct_candidate` 是可回读的候选，不是语义审核通过 |
+| `background_citations` | 仅作背景的候选，与支持本题的候选分开；不能填补直接证据缺口 |
+| `platform_coverage` | 各平台的 `direct_candidates`、`background_candidates` 和 `status`；统计本次返回结果，不是全库覆盖率 |
+| `answer_brief` | `user_question`、`reader_level`、`platforms`、`focus`、`must_answer`、`avoid`、`missing_direct_evidence`；帮助 AI 按用户问题组织小白能读懂的答案 |
+| `retrieval_scope` | 本次检索的实际范围与限制；不得由有限候选推断全库不存在某项证据 |
+
+`platform_coverage.status` 为 `candidate_evidence`、`background_only` 或 `not_found_in_retrieval`。这些状态不等于产品有/没有某项能力。平台单独检索和比较检索都需要回读并逐项核对。其他题型继续使用适合其问题的证据规则。
+
 问题最多 8,000 字符，请求体最多 128 KiB，只传必要背景。用户观察放 `context.observations`，不得升级为知识库证据。原文工具不接受任意 URL 或机器路径。
+
+`read_geo_source` 的结束行超出文档时截到实际末行；仍保留每次最多 400 行/30,000 字符。以返回的实际行号和 `next_start_line` 判断是否需要继续，不把请求的结束行当作已读范围。起始行无效或版本不存在仍报错，不换版本。
 
 没有远程 `review_geo_claim`，不保存全局用户审核记录和对话历史。`previous_answer_id` 无法解析本机之外的聊天，缺少明确问题时应澄清。追问需要 AI 改写指代并传真实引用，不凭“第二个”猜测对象。
 
