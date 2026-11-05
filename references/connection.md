@@ -1,55 +1,81 @@
 # 安装与连接
 
-## 安装 Skill
+普通使用者直接访问共享远程库，无需准备 Markdown、导入数据库或执行 `setup`。将本文件夹安装到 AI 工具支持的 Skill 目录，重新加载后确认能找到“海外 GEO 知识顾问”。Codex 常用 `~/.codex/skills/`；其他客户端以实际安装规则为准。
 
-把 `overseas-geo-advisor` 文件夹放到目标 AI 工具支持的 Skill 目录。Codex 常用 `~/.codex/skills/`。重新加载后确认能找到“海外 GEO 知识顾问”。不同产品的安装入口以该客户端为准。
+## 远程 MCP
 
-Skill 包没有维护者的完整私人知识库。需要执行本地资料配置，或以后连接实际部署的授权服务。当前没有可供外部用户直接使用的远程 URL。
-
-## 本地命令模式
-
-要求 Python 3.11 或更新版本；检索脚本使用标准库 SQLite。复用已有 Python，不为本 Skill 建立新的 portable runtime。
-
-下面用 `<skill>`、`<vault>`、`<data>` 表示本机实际绝对路径，在当前 shell 中正确加引号：
+地址：`https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp`。Streamable HTTP，无认证，不填 OAuth、Token 或 API Key。当前发布实测状态见 README；实际使用需先成功调用工具。
 
 ```text
-python -B -X utf8 <skill>/scripts/geo.py setup --vault <vault> --data-dir <data>
-python -B -X utf8 <skill>/scripts/geo.py status
-python -B -X utf8 <skill>/scripts/geo.py ask --question "海外信源怎么分？"
-python -B -X utf8 <skill>/scripts/geo.py search --question "引用率 mention rate" --limit 8
+codex mcp add overseas-geo --url https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp
 ```
 
-本项目已有资料映射时，setup 增加 `--manifest <obsidian-map-plan.json>`。其他资料库可以不传映射，由构建程序登记合法 Markdown。
-
-`setup` 只读取原资料，写独立索引和本用户配置。Windows 默认配置位置是 `%LOCALAPPDATA%/OverseasGeoAdvisor/config.json`，其他系统为 `~/.local/share/OverseasGeoAdvisor/config.json`。可用全局参数 `--config` 指定另一配置文件；`GEO_KB_DB` 可直接指定已有数据库。
-
-再次配置不同资料位置时需要显式新配置路径，或使用 `--replace-config`。该选项仅替换本工具配置，不移动、删除原文。索引更新使用 setup 或明确的 build 命令，原始历史版本仍保留。
-
-## 追问与历史引用
+生成通用 JSON 配置：
 
 ```text
-python -B -X utf8 <skill>/scripts/geo.py ask --question "刚才那篇原文怎么说？" --previous-answer-id <上次answer_id> --focus-citation-id <真实citation_id>
-python -B -X utf8 <skill>/scripts/geo.py read --document-id <document_id> --source-version <source_version> --start-line 1 --end-line 80
+python -B -X utf8 "<skill>/scripts/geo.py" remote-config
 ```
 
-`--context-file` 可以传只包含必要业务条件的 UTF-8 JSON。`--as-of YYYY-MM-DD` 用于明确历史时间；未知发布日期不能被自动认定符合日期范围。
+该命令不改全局设置。保存 MCP 连接并重新加载，先调用 `browse_geo_topics`，再验证 `ask_geo` 和指定版本 `read_geo_source`。远程有五个工具，不包含写入记录的 `review_geo_claim`。安装 Skill 不等于注册 MCP；两者结合可同时获得工具和阅读讲解规则。
 
-遇到新资料，由回答的 AI 读取原文后可执行 `review --bundle-file <JSON路径>`，记录本次断言核对。内容包括 document_id、source_version、statement、exact_quote、allowed_use、conditions、review_note。仅允许 attributed_report、definition、historical；不能将这个命令用来批准确定的现行机制或效果。它写本地派生记录，原始文件保持只读。
+## 内置远程脚本
 
-## 本地 MCP 模式
-
-MCP 服务另需 `mcp` Python SDK。本轮测试复用既有 `mcp==1.26.0`；不自动下载安装依赖。若目标环境没有该依赖，需要维护者自行安排安装，或继续使用标准库命令模式。
+没有 MCP 但能执行脚本时，复用 Python 3.11+，不另装 SDK、模型或运行时：
 
 ```text
-python -B -X utf8 <skill>/scripts/geo.py mcp-config
+python -B -X utf8 "<skill>/scripts/geo.py" --remote status
+python -B -X utf8 "<skill>/scripts/geo.py" --remote ask --question "海外信源怎么分？"
+python -B -X utf8 "<skill>/scripts/geo.py" --remote search --question "引用份额 citation share" --limit 8
+python -B -X utf8 "<skill>/scripts/geo.py" --remote read --document-id "<真实ID>" --source-version "<真实版本>" --start-line 1 --end-line 80
 ```
 
-这会生成带实际解释器、脚本与数据库路径的 JSON 配置，不改全局客户端设置。把配置用于支持本地 stdio MCP 的客户端；若它采用不同配置格式，按其规则填写相同 command/args。
+没有本地配置时可省略 `--remote`；已有本地配置时保留本地行为，`--remote` 则明确强制远程。错误的旧配置不会静默切换资料库。
 
-服务器通过客户端启动的标准输入输出通信，不开启网络端口。它继承当前本地账户的访问范围；这不是远程多用户鉴权服务。
+需要替代地址或超时时直接调用：
 
-首次连通应验证 initialize、工具列表、一次 ask、指定版本 read、一次追问，以及错误引用或缺失资料的处理。SDK 连通测试和真实用户 AI 的最终答案测试分别记录。
+```text
+python -B -X utf8 "<skill>/scripts/geo_remote.py" --url "https://example.org/api/mcp" --timeout 30 ask --question "海外信源"
+```
 
-## 外部用户的方式
+上例 example.org 只是占位地址。`GEO_MCP_URL` 也可覆盖默认 URL。默认超时 60 秒，最高 120 秒；不跟随登录页重定向。网络失败、非 MCP 响应和错误引用都会明确失败，不用模型记忆补答案。
 
-用户可安装本 Skill 并使用自己的授权资料副本。若希望所有用户持续访问同一知识库，需要另外部署远程服务，落实真实地址、鉴权、资料开放范围、模型与运行费用，再做客户端试点。不能分发本机数据库路径代替在线连接。
+## 追问与背景
+
+远程不保存对话、`answer_id` 或共享审核记录。AI 应把“第二个怎么做”改写为明确问题；有来源时附真实 `focus_citation_id`，或直接回读文档 ID、版本和行号。
+
+`--context-file` 可以传必要业务背景的 UTF-8 JSON：
+
+```json
+{
+  "market": "英语市场",
+  "industry": "B2B SaaS",
+  "goal": "了解如何开始 GEO",
+  "observations": ["用户说：只有一次 AI 回答截图，尚无连续监测"]
+}
+```
+
+用户观察不是知识库证据。不要传整个聊天记录。`--as-of YYYY-MM-DD` 过滤历史发布日期，未知日期不自动认定符合范围。
+
+每次原文读取最多 400 行或 30,000 字符，按返回的 `next_start_line` 续读长文。行号和链接对应同一版本，读取失败不能悄悄改用新版本。
+
+## 常见问题
+
+- 找不到工具：确认支持 Streamable HTTP，重新加载连接；仅支持脚本的客户端可使用内置远程脚本。
+- 出现登录页或 HTML：本次未查询成功，核对地址是否为 `/api/mcp`，不要把网页当工具结果。
+- 连接超时：保留失败状态，稍后重试，不声称已根据知识库回答。
+- 结果不相关：缩短问题，增加平台、业务、时间或英文术语，拆开多个子问题。
+- 分类资料不能支撑优先级：另找比较证据和业务条件，不用模型经验补齐。
+
+## 可选：自己的本地资料
+
+维护者可查询本地授权 Markdown；这不是普通用户的安装步骤：
+
+```text
+python -B -X utf8 "<skill>/scripts/geo.py" --local setup --vault "<vault>" --data-dir "<data>"
+python -B -X utf8 "<skill>/scripts/geo.py" --local status
+python -B -X utf8 "<skill>/scripts/geo.py" --local mcp-config
+```
+
+独立索引目录不要放在源目录里。`setup` 只读源文档，写派生索引与配置。可传 `--manifest` 使用已有映射；Windows 配置默认 `%LOCALAPPDATA%/OverseasGeoAdvisor/config.json`，其他系统 `~/.local/share/OverseasGeoAdvisor/config.json`。`--config <路径>` 明确指定本地配置，`GEO_KB_DB` 明确指定本地数据库。
+
+替换不同配置需另一个 `--config` 或明确 `--replace-config`，不移动删除原文。本地 stdio 另需兼容 SDK，测试版本 `mcp==1.26.0`。本地支持 `previous_answer_id` 和 `review_geo_claim`，只登记当前 AI 的原文核对，不是专家批准或当前效果核验；远程不提供这两个持久化功能。

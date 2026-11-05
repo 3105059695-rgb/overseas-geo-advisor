@@ -21,7 +21,9 @@
 
 本 Skill 种子断言的核验范围记录在 `assets/curated.json`。检查声明的原始片段是否匹配当前入库版本；不匹配时不可套用原来的资格。
 
-对新的问题，不必把整个文档笼统设为可信。先通过 `read_geo_source` 读相应版本和上下文，再向 `review_geo_claim` 提交 statement、exact_quote、allowed_use、conditions、review_note。工具只允许 `attributed_report`、`definition`、`historical`，核对片段与版本，并在派生数据库中记录本次 AI 的含义核对声明。它不会修改原文或种子资料。
+对新的问题，不必把整个文档笼统设为可信。先通过 `read_geo_source` 读相应版本和上下文。公开远程模式不提供 `review_geo_claim`，也不能写入公共审核记录；按远程接口的 `check_geo_answer` 格式提交陈述、连续原文摘录、引用和条件，只检查版本、定位及有限用途规则，逐句语义判断仍由回答者完成。
+
+仅在本地模式，才向 `review_geo_claim` 提交 statement、exact_quote、allowed_use、conditions、review_note。工具只允许 `attributed_report`、`definition`、`historical`，核对片段与版本，并在本机派生数据库中记录本次 AI 的含义核对声明。它不会修改原文或种子资料。
 
 登记后的断言必须保持限定归因，且注明未独立验证。该登记不是领域专家审核；语义是否匹配不能靠字符串存在来证明。review_note 应写实际判断理由和适用边界，不写“已检查”这样的空话。涉及当前机制、效果保证或行动排序，不能用这个接口获取更高资格。
 

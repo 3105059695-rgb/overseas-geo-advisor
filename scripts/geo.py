@@ -1,4 +1,4 @@
-"""Local convenience entry; no network, no package installation, no MCP global edits."""
+"""GEO entry: public remote retrieval by default; explicit local configuration remains supported."""
 from __future__ import annotations
 
 import argparse
@@ -36,13 +36,36 @@ def load_config(path: Path) -> dict:
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     cfg_path = config_path()
-    if len(argv) >= 2 and argv[0] == '--config':
-        cfg_path = Path(argv[1]).expanduser().resolve()
-        argv = argv[2:]
+    explicit_local = False
+    remote = False
+    while argv and argv[0] in {'--config', '--remote', '--local'}:
+        if argv[0] == '--config':
+            if len(argv) < 2:
+                return emit({'status': 'error', 'error': '--config 缺少配置文件路径'}, 2)
+            cfg_path = Path(argv[1]).expanduser().resolve()
+            explicit_local = True
+            argv = argv[2:]
+        else:
+            remote = remote or argv[0] == '--remote'
+            explicit_local = explicit_local or argv[0] == '--local'
+            argv = argv[1:]
+    if remote and explicit_local:
+        return emit({'status': 'error', 'error': '--remote 不能与 --local 或 --config 同时使用'}, 2)
     if not argv:
-        return emit({'status': 'needs_configuration', 'commands': ['setup', 'status', 'ask', 'search', 'read', 'review', 'browse', 'check', 'mcp-config'], 'help': 'setup --help; other commands pass through to geo_kb.py'}, 2)
+        return emit({'status': 'ready', 'default': 'remote_unless_local_configured', 'commands': ['status', 'ask', 'search', 'read', 'browse', 'check', 'remote-config', 'mcp-config', 'setup'], 'help': '--remote ask --question "海外信源怎么分？"；公开服务无需导入资料。'})
     command, extra = argv[0], argv[1:]
     scripts = Path(__file__).resolve().parent
+    if command == 'remote-config':
+        if extra:
+            return emit({'status': 'error', 'error': 'remote-config 不接受其他参数；替换地址可设置 GEO_MCP_URL。'}, 2)
+        from geo_remote import remote_config
+        return emit(remote_config())
+    use_remote = remote or (not explicit_local and command not in {'setup', 'build', 'review'} and not os.environ.get('GEO_KB_DB') and not cfg_path.is_file())
+    if use_remote:
+        from geo_remote import main as remote_main
+        if command in {'setup', 'build', 'review'}:
+            return emit({'status': 'error', 'error': '公开远程知识库不开放构建或写入核对记录；本地资料管理请使用 --local。'}, 2)
+        return remote_main([command, *extra])
     if command == 'setup':
         parser = argparse.ArgumentParser(description='Connect authorized local Markdown; source folder is read-only.')
         parser.add_argument('--vault', required=True)

@@ -1,6 +1,6 @@
 interface:
   display_name: "海外 GEO 知识顾问"
-  short_description: "查询海外 GEO 原始资料，按证据解释产品、信源与实操方法并保留出处"
-  default_prompt: "使用 $overseas-geo-advisor 查询知识库，详细解释我的海外 GEO 问题，并注明依据、适用条件和未确定内容。"
+  short_description: "直接查询共享海外 GEO 知识库，按原文解释产品、信源与实操方法，无需导入资料"
+  default_prompt: "使用 $overseas-geo-advisor 查询共享远程知识库，先读取相关原文，再详细解释我的海外 GEO 问题，并注明依据、适用条件和未确定内容。"
 policy:
   allow_implicit_invocation: true

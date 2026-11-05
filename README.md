@@ -1,147 +1,133 @@
 # 海外 GEO 知识顾问
 
-根据已连接的知识库，解释海外 AI 搜索产品、信源分类、GEO 实操方法、指标、论文和案例，并保留来源、日期与适用条件。
+安装这个 Skill 后，让你的 AI 查询维护者提供的 GEO 知识库，再依据原文回答专业问题。**普通使用者不需要准备或导入资料，不需要知识库账号或 API Key。**
 
-**当前版本：v0.1.0，本地 Skill + CLI + stdio MCP。** 用户自己的 AI 负责讲解，配套工具负责检索、读取指定版本原文、记录断言核对和检查引用资格。
+适合问海外 AI 搜索产品、信源分类、GEO 操作方法、指标、论文和案例。工具负责找到证据和回读原文，你正在使用的 AI 负责中文讲解，保留来源、日期、适用条件与证据缺口。
 
-公开这个仓库提供的是 Skill 和工具代码。**仓库不包含维护者的 977 份私人资料全文，也没有已经部署的共享在线知识库地址。** 使用者需要连接自己的授权 Markdown 资料。仓库中的 22 个种子断言、3 份答案样稿用于说明证据规则与回答方式，不等于附带完整知识库。
+当前代码版本 **v0.2.0**。共享快照有 **977 份文档、6,559 个检索片段**，按来源归为 833 组；不等于 833 份经人工核验的独立证据。
 
-## 可以用来做什么
+<!-- REMOTE_DEPLOYMENT_STATUS -->
+**已于 2026-11-05 发布并完成免登录实测。** 正式 MCP 客户端成功发现五个工具，三个真实问题的引用原文与源快照逐行一致。服务连通与引用定位已验证；这不等于独立的专业语义验收。
 
-- 解释海外 AI 产品的资料收录范围，区分历史提及与当前功能核查。
-- 解释信源的不同分类维度，以及为什么分类不能直接变成渠道投入排名。
-- 阅读方法、论文和案例，说明作者观点、实验条件与不能外推的部分。
-- 给出有出处的 GEO 执行框架和通用排查顺序。
-- 追问“这个结论来自哪里”，按文档版本与行号读取依据。
+## 最简单的使用方式
 
-遇到资料不足，工具会保留缺口；没有实际站点材料时，只能给通用排查假设，不作确定归因。
+把仓库链接发给支持安装 Skills、执行脚本的 AI，并说：
 
-## 快速安装
+> 安装这个海外 GEO Skill：https://github.com/3105059695-rgb/overseas-geo-advisor 。使用它自带的共享远程知识库，不导入我自己的资料。安装后查询“海外信源怎么分”，给出知识库原文依据。
 
-需要 Python 3.11 或更新版本，以及支持 FTS5 的 SQLite。CLI 检索使用 Python 标准库，不需要下载向量模型。优先复用已经安装的 Python。
+安装权限与目录由客户端决定。支持远程 MCP 的客户端也可直接连接下面的地址；同时安装 Skill，能让 AI 使用本项目的阅读、引用和讲解规则。
 
-### 1. 安装 Skill
+## 方式一：连接远程 MCP
 
-支持 Skills 的客户端可将本仓库放到其 Skill 目录。以 Codex 为例，PowerShell 中执行：
+| 配置项 | 值 |
+|---|---|
+| 名称 | `overseas-geo` |
+| 传输方式 | Streamable HTTP |
+| 地址 | `https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp` |
+| 认证 | 无，不需要登录或填写 Token |
+
+Codex 可运行：
+
+```text
+codex mcp add overseas-geo --url https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp
+```
+
+其他客户端在 MCP 设置选择 HTTP 并填写 URL。JSON 示例中的具体字段以客户端要求为准：
+
+```json
+{
+  "mcpServers": {
+    "overseas-geo": {
+      "type": "http",
+      "url": "https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp"
+    }
+  }
+}
+```
+
+保存并重新加载，确认出现 `ask_geo`、`search_geo`、`read_geo_source`、`browse_geo_topics`、`check_geo_answer` 五个工具。先让 AI 调用 `browse_geo_topics` 确认实际响应，再提问。
+
+## 方式二：只安装 Skill，使用内置远程脚本
+
+适用于能执行命令的 AI 客户端。复用 **Python 3.11+**；脚本只用标准库，不需要 MCP SDK、向量模型或本地数据库。
+
+Codex 的 PowerShell 示例：
 
 ```powershell
 $skillDir = Join-Path $HOME ".codex/skills/overseas-geo-advisor"
-git clone https://github.com/3105059695-rgb/overseas-geo-advisor.git $skillDir
+git clone --depth 1 --single-branch https://github.com/3105059695-rgb/overseas-geo-advisor.git $skillDir
 Set-Location $skillDir
+python -B -X utf8 scripts/geo.py --remote status
+python -B -X utf8 scripts/geo.py --remote ask --question "海外信源怎么分？"
 ```
 
-macOS 或 Linux Shell：
+macOS 或 Linux：
 
 ```bash
-git clone https://github.com/3105059695-rgb/overseas-geo-advisor.git ~/.codex/skills/overseas-geo-advisor
+git clone --depth 1 --single-branch https://github.com/3105059695-rgb/overseas-geo-advisor.git ~/.codex/skills/overseas-geo-advisor
 cd ~/.codex/skills/overseas-geo-advisor
+python3 -B -X utf8 scripts/geo.py --remote status
 ```
 
-已有同名目录时先确认其用途，不要覆盖。其他 AI 工具按自身支持的 Skill 安装位置处理；仅支持 MCP 的客户端可以直接使用后面的 MCP 接入方式。
+已有同名目录时不要覆盖，确认属于本项目后按正常 Git 更新流程处理。其他客户端使用自身 Skill 目录。安装 Skill 不会自动改写 MCP 全局设置；没有 MCP 时，AI 可调用内置远程脚本。
 
-### 2. 连接自己的资料
+新安装没有本地配置时，`geo.py ask/search/read/browse/check` 自动使用远程库。有旧本地配置时保持原行为，`--remote` 明确切换至共享服务。详见 [连接说明](references/connection.md)。
 
-把下面两个占位路径替换为本机实际路径，索引目录必须放在原资料目录之外：
+## 直接这样提问
+
+> 使用 $overseas-geo-advisor，详细解释海外信源怎么分。先读取知识库相关原文，给出来源、例子和适用条件，不要按模型记忆补齐。
+
+- “知识库收录了哪些海外 AI 搜索产品？哪些信息只是历史记录？”
+- “我的英文 B2B 网站怎样开始 GEO？做什么、产出什么、如何检查？”
+- “品牌提及率、引用份额和 SoV 的分母有什么区别？”
+- “这个 Reddit 方法适合我的业务吗？保留原帖问题、回答和反驳意见。”
+- “刚才的结论出自哪段原文？解释相关上下文。”
+
+`evidence_packet` 是候选证据包，AI 仍需阅读原文后写答案，不是已核验的成品答案。查询失败应明确失败；没有对应证据应说明缺口。
+
+## 回答如何保留依据
+
+1. 按问题检索，再读取真正采用的原文段落。
+2. 引用保留来源链接、文档版本和行号，能回到当时采用的内容。
+3. 同源的原文、译文、笔记归组，不重复增加证据数量。
+4. 区分作者经验、定义、历史说明、综合建议和教学例子。
+5. 数字、现行机制和优先级不因“有引用”就成为确定事实。
+
+服务只读，不允许访客修改知识库或给全库写审核记录，不保存服务器端对话历史。追问需要 AI 结合当前对话明确问题或引用。`check_geo_answer` 只核对引用结构、摘录和允许用途，不等于专家审核或语义正确保证。
+
+## 更新与限制
+
+远程库是维护者发布的版本快照，不依赖使用者的电脑。新增 Obsidian/飞书资料后，维护者需重新导出发布；使用者继续使用同一 MCP 地址。当前没有自动实时同步承诺。
+
+文档数不代表全文翻译、图片、评论和外部链接均已完整核验。检索采用中英文词法、中文双字切分和术语扩展；相似分数不是正确率。产品现状、实验外推和具体站点归因需要相应证据。
+
+主分支是轻量 Skill 与工具代码，不附带本地 SQLite 数据库、账户配置或凭据。共享服务使用维护者明确开放的云端快照；原始资料与观点的权利归相应作者，引用不表示作者为项目背书。
+
+维护者可查看 [远程服务源码与更新步骤](remote-server/README.md)。普通使用者无需部署服务器。
+
+## 可选的本地模式
+
+维护者仍可查询自己的授权资料；普通远程用户不需要这一步：
 
 ```text
-python -B -X utf8 scripts/geo.py setup --vault "<授权Markdown资料目录>" --data-dir "<独立索引目录>"
-python -B -X utf8 scripts/geo.py status
-python -B -X utf8 scripts/geo.py search --question "海外信源怎么分？" --limit 8
-python -B -X utf8 scripts/geo.py ask --question "海外信源怎么分？"
+python -B -X utf8 scripts/geo.py --local setup --vault "<Markdown资料目录>" --data-dir "<独立索引目录>"
+python -B -X utf8 scripts/geo.py --local status
+python -B -X utf8 scripts/geo.py --local mcp-config
 ```
 
-`setup` 读取原始资料，写入独立索引和本用户配置，不修改源文件。普通查询无需重新构建索引。再次执行相同配置的 `setup` 可以更新索引并保留历史版本。
+本地 stdio MCP 另需兼容 Python `mcp` SDK，开发测试版本 `mcp==1.26.0`。本地模式增加 `review_geo_claim` 与本机追问记录，不能误认作远程共享功能。
 
-种子样稿依赖特定原文及版本；自己的资料库不包含这些原文时，工具会报告缺失，并按实际资料返回候选证据，不伪造样稿依据。新命中的资料可在 AI 阅读上下文后逐项记录有限用途的核对。
-
-完整连接、配置位置与历史引用操作见 [连接说明](references/connection.md)。
-
-### 3. 在 AI 中提问
-
-在已识别 Skill、并能执行本地工具的客户端中，可以这样说：
-
-> 使用 $overseas-geo-advisor，详细解释海外信源怎么分类。请给出知识库依据，并说明哪些信息不足以支持渠道投入顺序。
-
-也可以问：
-
-- “知识库收录了哪些海外 AI 搜索产品？哪些能力仍需当前核查？”
-- “品牌提及、引用份额与 SoV 的统计口径有什么区别？”
-- “这个案例适合我的业务吗？先说明它的适用条件。”
-- “海外 GEO 怎么操作？请解释每一步的目的、产出和依据。”
-
-CLI 的 `ask` 返回结构化结果。`curated_answer` 表示来源样稿；`evidence_packet` 表示仍需 AI 阅读和解释的候选证据包。二者都不等于独立专家已经核验的答案。
-
-## MCP 接入（可选）
-
-本地 stdio MCP 另需 Python `mcp` SDK；本版测试版本是 `mcp==1.26.0`。先使用已有的兼容环境。若尚未安装、并决定在当前 Python 环境安装，可执行：
-
-```text
-python -m pip install "mcp==1.26.0"
-python -B -X utf8 scripts/geo.py mcp-config
-```
-
-第二条命令生成当前解释器、脚本与数据库的实际连接配置，不修改客户端的全局设置。将配置填入支持本地 stdio MCP 的客户端；不同客户端可能需要转换配置格式。
-
-服务由客户端作为本地进程启动，不开放 HTTP 端口。它使用当前本地账户的访问范围，没有提供远程多用户鉴权。
-
-| 工具 | 用途 |
-|---|---|
-| `ask_geo` | 查询专业问题，返回来源样稿或证据包，并明确范围和缺口 |
-| `search_geo` | 使用词法、中文分词和术语扩展查找相关片段 |
-| `read_geo_source` | 按文档 ID、版本和行号读取原文 |
-| `review_geo_claim` | 记录本次 AI 对断言的核对；只允许作者报告、来源定义或历史表述 |
-| `browse_geo_topics` | 查看资料覆盖、目录和当前能力 |
-| `check_geo_answer` | 检查引用定位及证据使用资格，不证明语义正确性 |
-
-原资料始终保持只读；追问记录和断言核对写入本地派生数据库。接口和状态含义见 [实现范围与接口](references/runtime-contract.md)。
-
-## 怎样约束回答
-
-1. 先理解用户问题中的产品、功能模式、市场、时间和业务背景。
-2. 搜索资料，再读取必要上下文，保留方法、结果、条件与局限。
-3. 每项重要结论对应真实片段；同一论文的原文、译文和笔记不算多份独立证据。
-4. 区分来源定义、作者经验、历史表述、综合建议和教学示例。
-5. 未核验的数字或机制只作查证线索，不用于核心结论和行动优先级。
-6. 引用绑定原文版本；资料更新后，仍可回查当时采用的内容。
-
-`review_geo_claim` 验证指定版本中存在对应原文，并记录回答 AI 的核对声明。它不能独立证明文章事实或方法效果，也不能批准当前产品机制或渠道排序。`check_geo_answer` 的结构检查通过同样不代表答案内容通过专家验收。
-
-更多规则与实例：
-
-- [证据与回答规则](references/evidence-policy.md)
-- [40 个开发问题的覆盖范围](references/coverage.md)
-- [三份真实资料答案样稿](references/answer-samples.md)
-- [评测方式与验收边界](references/evaluation.md)
-
-## 验证范围
-
-本版已在开发环境通过 **26 项自动行为测试**，涵盖版本回读、同源片段、引用篡改、断言用途、配置、追问以及 MCP SDK 成功和失败路径。已使用官方 Python SDK 客户端完成 stdio 握手与实际工具调用。
-
-运行测试：
+运行行为测试：
 
 ```text
 python -B -X utf8 -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-MCP 测试需要对应 SDK；没有 SDK 时，相关测试会跳过，应如实记录跳过情况。
+协议连通、引用定位和输入边界测试不等于独立专业内容验收。真实图形 AI 客户端的最终展示与回答质量需分别记录。
 
-以下仍需单独验证：独立 40 题专业内容验收、真实图形 AI 客户端最终展示、当前产品机制和可用性，以及使用者的原文链接和图片访问权限。测试通过不构成“零错误”保证。
-
-## 仓库结构
-
-```text
-overseas-geo-advisor/
-├── SKILL.md                       # AI 使用规则
-├── agents/openai.yaml             # Skill 展示信息
-├── assets/curated.json             # 有范围的种子断言、目录与样稿
-├── scripts/
-│   ├── geo.py                     # 配置与命令入口
-│   ├── geo_kb.py                  # 索引、检索、版本与证据资格
-│   └── geo_mcp.py                 # 本地 stdio MCP
-├── references/                    # 规则、覆盖表、样稿和接入说明
-└── tests/                         # 行为测试及开发问题
-```
-
-数据库、用户配置、私人资料全文及服务凭据不随仓库发布。公开引用资料和原始观点的权利归相应作者；引用仅说明出处，不表示作者为本项目背书，也不将第三方材料重新授予统一许可。
-
-如果要让不同用户连接同一个在线知识库，需要另行部署远程服务，明确访问范围、鉴权、运行费用和客户端兼容性。公开本仓库不会自动公开或托管任何人的本地知识库。
+- [安装、配置与排障](references/connection.md)
+- [接口及本地/远程差异](references/runtime-contract.md)
+- [证据与回答规则](references/evidence-policy.md)
+- [40 个开发问题](references/coverage.md)
+- [答案样稿](references/answer-samples.md)
+- [评测与验收边界](references/evaluation.md)
