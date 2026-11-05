@@ -18,7 +18,7 @@ python -B -X utf8 "<skill>/scripts/geo.py" remote-config
 
 该命令不改全局设置。保存 MCP 连接并重新加载，先调用 `browse_geo_topics`，再验证 `ask_geo` 和指定版本 `read_geo_source`。远程有五个工具，不包含写入记录的 `review_geo_claim`。安装 Skill 不等于注册 MCP；两者结合可同时获得工具和阅读讲解规则。
 
-## 内置远程脚本
+## 内置远程脚本与备用通道
 
 没有 MCP 但能执行脚本时，复用 Python 3.11+，不另装 SDK、模型或运行时：
 
@@ -31,13 +31,35 @@ python -B -X utf8 "<skill>/scripts/geo.py" --remote read --document-id "<真实I
 
 没有本地配置时可省略 `--remote`；已有本地配置时保留本地行为，`--remote` 则明确强制远程。错误的旧配置不会静默切换资料库。
 
+v0.3.0 支持三种方式，参数放在 `status`、`ask` 等子命令之前：
+
+| 参数 | 行为 |
+|---|---|
+| `--transport auto` | 默认；内置 MCP 地址连接失败时使用固定的 GitHub 公开快照；不会替换自定义资料服务 |
+| `--transport mcp` | 只测 MCP，失败就返回失败，适合排查连接 |
+| `--transport github` | 跳过 MCP，直接检索同一版本的 GitHub 快照 |
+
+豆包等环境若没有原生 MCP 注册入口，直接使用脚本。确认其 MCP 访问失败后，可以这样验证备用通道：
+
+```text
+python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github status
+python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github ask --question "海外信源怎么分？"
+python -B -X utf8 "<skill>/scripts/geo.py" --remote --transport github read --document-id "<上一步真实ID>" --source-version "<上一步真实版本>" --start-line <真实起始行> --end-line <真实结束行>
+```
+
+以 `transport.used` 报告实际通道：`mcp` 为 MCP 查询，`github_snapshot` 为 GitHub 快照查询。备用通道可用不等于 MCP 已注册或已连接。验证应包含查询和原文回读，不只是查看仓库里的资料数量声明。
+
+备用模式通过 HTTPS GET 按需读取公开的 catalog、索引分片和所需原文；固定到本版的数据 commit，按完整性清单校验文件及正文版本。它不需要用户导入数据，不下载整个数据分支、不创建 SQLite，自动缓存最多 32 MiB。GitHub 也不可达时仍会如实失败。
+
 需要替代地址或超时时直接调用：
 
 ```text
 python -B -X utf8 "<skill>/scripts/geo_remote.py" --url "https://example.org/api/mcp" --timeout 30 ask --question "海外信源"
 ```
 
-上例 example.org 只是占位地址。`GEO_MCP_URL` 也可覆盖默认 URL。默认超时 60 秒，最高 120 秒；不跟随登录页重定向。网络失败、非 MCP 响应和错误引用都会明确失败，不用模型记忆补答案。
+上例 example.org 只是占位地址。`GEO_MCP_URL` 也可覆盖默认 URL。自定义 URL 与内置地址不同时，`auto` 不会切换到维护者的资料；只有明确选择 `--transport github` 才使用维护者快照。
+
+`auto` 对默认 MCP 的单次探测超时最多 12 秒，之后可尝试备用通道。显式 `mcp` 模式使用 `--timeout`，默认 60 秒、最高 120 秒。不把登录重定向或 HTML 拦截页当作 MCP 成功，也不把备用结果误认作指定 MCP 的结果。
 
 ## 追问与背景
 
@@ -60,9 +82,11 @@ python -B -X utf8 "<skill>/scripts/geo_remote.py" --url "https://example.org/api
 
 ## 常见问题
 
-- 找不到工具：确认支持 Streamable HTTP，重新加载连接；仅支持脚本的客户端可使用内置远程脚本。
-- 出现登录页或 HTML：本次未查询成功，核对地址是否为 `/api/mcp`，不要把网页当工具结果。
-- 连接超时：保留失败状态，稍后重试，不声称已根据知识库回答。
+- 找不到工具：确认支持 Streamable HTTP，重新加载连接；客户端没有原生 MCP 入口时使用内置脚本，不重复尝试不存在的注册命令。
+- MCP 返回 403、登录页或 HTML：核对完整地址是否为 `/api/mcp`，再用 `--transport github` 实测。不要把网页当工具结果，也不要仅凭 403 断定 IP 被封锁。
+- MCP 超时：默认 `auto` 尝试备用通道；已确认不可达时直接使用 `github`，避免每次重复等待。两个通道都失败时保留错误，不声称已根据知识库回答。
+- 让用户换 Wi-Fi：若代码运行在 AI 平台云端，用户本地 Wi-Fi 通常不会改变该执行环境的出口；先检查实际通道，而非要求用户反复换网络。
+- GitHub 查询可用：沿用该通道继续提问、读取和核对，不要求用户安装数据库，不宣称 MCP 已连通。
 - 结果不相关：缩短问题，增加平台、业务、时间或英文术语，拆开多个子问题。
 - 分类资料不能支撑优先级：另找比较证据和业务条件，不用模型经验补齐。
 

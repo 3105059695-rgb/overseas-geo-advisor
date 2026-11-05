@@ -114,7 +114,7 @@ class RemoteTests(unittest.TestCase):
         with patch.object(geo_remote.RemoteClient, 'initialize', side_effect=geo_remote.RemoteError('network_error', '网络未连接')):
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                code = geo_remote.main(['browse'])
+                code = geo_remote.main(['--transport', 'mcp', 'browse'])
             result = json.loads(output.getvalue())
             self.assertEqual(code, 2)
             self.assertFalse(result['knowledge_lookup_completed'])

@@ -2,7 +2,7 @@
 name: overseas-geo-advisor
 description: 直接查询维护者公开的海外 GEO 知识库，解释 AI 搜索产品、信源分类、内容和站外优化、指标、论文与案例。无需使用者准备资料；先检索并回读原文，再按来源、日期和适用条件回答专业问题。适用于知识问答与通用排查，不自动执行网站优化或发布。
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # 海外 GEO 知识顾问
@@ -16,14 +16,28 @@ metadata:
 <!-- REMOTE_DEPLOYMENT_STATUS -->
 发布校验状态：2026-11-05 已用免登录的正式 MCP 客户端验证五个工具、真实问题查询和精确版本回读。每次使用仍以实际工具响应为准，不能把历史测试当作本次查询成功。
 
+<!-- FALLBACK_VERIFICATION_STATUS -->
+v0.3.0 已于 2026-11-05 通过 58 项行为测试，并在模拟 MCP 返回 403 时完成真实 GitHub 查询与原文逐行比对。每个使用环境仍须通过真实查询与回读确认本次可用性；不能把维护者的测试说成豆包环境已验证。
+
 优先调用已连接的 `ask_geo`、`search_geo`、`read_geo_source`、`browse_geo_topics` 和 `check_geo_answer`；工具名可能带客户端命名空间。远程没有 `review_geo_claim`，不写入公共审核记录或对话历史。
 
-没有 MCP，但 AI 能执行本地脚本时，用本 Skill 的标准库脚本查询同一远程库：
+没有原生 MCP 工具，或原生 MCP 返回 403、超时、网络及协议错误时，用本 Skill 的标准库脚本查询。默认 `auto` 先尝试 MCP，连接失败时转为直接读取固定 GitHub 快照：
 
 ```text
 python -B -X utf8 "<本Skill目录>/scripts/geo.py" --remote status
 python -B -X utf8 "<本Skill目录>/scripts/geo.py" --remote ask --question "海外信源怎么分？"
 ```
+
+已确认本次环境的 MCP 不可达时，直接验证 GitHub 通道：
+
+```text
+python -B -X utf8 "<本Skill目录>/scripts/geo.py" --remote --transport github status
+python -B -X utf8 "<本Skill目录>/scripts/geo.py" --remote --transport github ask --question "海外信源怎么分？"
+```
+
+检查 `transport.used` 与 `transport.mcp_connected`。`github_snapshot` 成功时应说“已通过 GitHub 快照查询”，不能说“MCP 已连接”。从真实结果拿到引用后，再用同一通道执行 `read`；不能仅凭 `status` 的资料数量宣称原文已读。确认通道可用后，后续问题沿用它，不必重复安装。两个通道都失败才报告查询未完成；不得用模型记忆替代。
+
+GitHub 通道自动按需下载并维护最多 32 MiB 缓存，不克隆整个 `knowledge-snapshot` 分支，不要求用户手动导入，也不建立 SQLite。不要擅自改变固定数据 commit 或关闭完整性检查。只有连接类故障才能自动切换；空检索、参数错误、缺失版本、证据不足或核对阻断不得用切换通道掩盖。
 
 复用已安装的 Python 3.11+，无需 MCP SDK、向量模型或本地数据库。路径按当前 shell 加引号。客户端既不能调用远程 MCP，也不能执行脚本时，说明需要配置哪种连接，不假装已查询。完整安装见 [连接说明](references/connection.md)。
 
@@ -48,7 +62,7 @@ python -B -X utf8 "<本Skill目录>/scripts/geo.py" --remote ask --question "海
 - 论文/案例解释实验或观察条件、结果和局限；教学例子标为例子，不编造真实数据。
 - 无现场材料时只给通用排查假设；具体归因需平台、时间、问题样本、页面或日志，用户材料标记为用户提供。
 
-引用采用工具返回的 `reading_url`、`original_url`、标题、`source_version` 和行号，优先公开原文回读页。不要用本机路径、编造链接或私人飞书页作为外部用户的唯一证据入口。
+引用采用工具返回的 `reading_url`、`original_url`、标题、`source_version` 和行号。MCP 模式可用公开原文页；GitHub 模式用其返回的快照链接和原始来源，不改回已失败的服务域名。快照 JSON 文件的显示行号不是正文行号，应采用返回的 `line_start`、`line_end`。不要用本机路径、编造链接或私人飞书页作为外部用户的唯一证据入口。
 
 ## 必须保留的边界
 

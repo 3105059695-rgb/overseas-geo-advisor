@@ -1,6 +1,6 @@
 {
   "name": "overseas-geo-advisor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "contains_private_full_corpus": false,
   "remote_service_deployed": true,
   "remote_mcp_url": "https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp",
@@ -10,16 +10,16 @@
   "files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
     ".gitignore": "5a43803e48a3802db15e915c7397a7dcbd980d92fce504840a002117bb36ce09",
-    "README.md": "8e1bfc522c990c8c62eda390ef6ef5054916533ea5bee239ff21101d67d9c2ca",
-    "SKILL.md": "2d9c6d84291126e53f1817d0ad1253738de64172f82db416cd82140810e8267b",
-    "agents/openai.yaml": "ce9e8140c616378efc6b4a888f3e720cb7889f5f9d3eb74daac7d4e2c8ddeb63",
+    "README.md": "83c48a988e99c916aa4ab1564df7541dafe4a88661e3a3ff2c277d209aa86a19",
+    "SKILL.md": "e7e605d84d976587ff68e2b5fdb6050cf7c8f06cbbacb08cb9c8a9edc288ad31",
+    "agents/openai.yaml": "45160ad6e610c584ffd2051dc70f3c95ee062668c1a3042dfe41f8624c06a449",
     "assets/curated.json": "3aae7a6eb093c6fe9fc8863ef9b342985f7d018ac049cfc2eea1e2903d70451f",
     "references/answer-samples.md": "8a64e3dc89c289b737d39dc358a6fcf8725442154972d4ffa8377e5344e4afeb",
-    "references/connection.md": "46685462a59efba0589fbd054c40a6c2eb2ab6d1e983b6f1be37339140ce7227",
+    "references/connection.md": "a9625026196bbea08493e9402b559ecc744e581d39ac35693c7e93b6b3eb5e98",
     "references/coverage.md": "756b3221ac22269cbc87009c0c50569572171417679e1b4bccf94f948853e3e2",
     "references/evaluation.md": "3920ecc16a864f92b6344712cbb7037581469b79348aa00604c469eb7e29c89d",
     "references/evidence-policy.md": "3fe898abf6b87f1679a06d6d306ccd9456817b2cbb329c8c4d736940f7e1e631",
-    "references/runtime-contract.md": "21d5093e9236a52d0b8d0954aa78b19a4ea04a08ad03344b61a1168e451826eb",
+    "references/runtime-contract.md": "45f77737aac697da3398853255e0f22f99c81c3c8a56864bdce6ab28b31242b7",
     "remote-server/README.md": "4f48340cb2c750522aae66b08919ef5c5e0d9759e93d0c4e7557454d7ba8a508",
     "remote-server/worker.mjs": "76734fa2ece45ccf8638e640cbd7bc84307789024288f0eb60e975d4d2e46390",
     "requirements-mcp.txt": "feff1eb1f8fbbbc2a3fd0138e21d1dff2e22de8c6535fa5b8842a3e8aca4adc4",
@@ -27,12 +27,22 @@
     "scripts/geo.py": "2da533b2431d477428da67c5dbc99537f0d3cb1979a8ddf4aa94fcc5687e6e1c",
     "scripts/geo_kb.py": "bb8598db727c008827d305185db47a818d883fdfc759ef591e07cf6a3e20adcc",
     "scripts/geo_mcp.py": "9648061661d65254a5ac3b41052c2b8229ce168ba1159ace1998aee9c7252211",
-    "scripts/geo_remote.py": "7e4a55b40b21ec227c784f6c8898630fbc0bbb61777f0ba3fb7ddf7a9e957ff4",
+    "scripts/geo_remote.py": "7031043dff3560a98d1463748c7d2b94eb6174c96783e7d173a511ec2b309397",
+    "scripts/geo_snapshot.py": "3763c348176658365d779a4671d6e5dea5ed83b654085f27e042d79244b4387b",
     "tests/development_questions.json": "4602d74ce1f2eaeb8a826f71284aeb425af383165b9fe3baebf75cc12993f6cd",
     "tests/test_entry.py": "18a17879fda4677955632b1628eac6d86b87db7a0915abd5a1bef91df33c52dd",
     "tests/test_export_remote.py": "8ff31ad78208ec832f414e4924da2bb846cddee0dd393f4f42003f12a8d7a63e",
+    "tests/test_geo_fallback.py": "3a0ff8154a8daaeae477800104ccbde68116220d3214362a68155cf1154656c4",
     "tests/test_geo_kb.py": "22a1d1c79638edd21a15996ba95b2634952dc98716a244a35d1f09380f76f9de",
     "tests/test_geo_mcp.py": "526d99f1e7380ef572881df052f625c802d478d9d26f5d7d5b72f23092ccfcfe",
-    "tests/test_geo_remote.py": "f2ec9e8b6aefe9054412d8800f751c21d7e431cbbda25442a9bc912078a29d79"
+    "tests/test_geo_remote.py": "9390afa4ef0335bd4840315b911f72085e983542b04a9c6e46dfce3842bb24c9",
+    "tests/test_geo_snapshot.py": "6ee53faf1a9be8a0b83ed1de19610f865c04d3c938a1ff8f57d9d6eca508c43d"
+  },
+  "github_snapshot_fallback": {
+    "enabled": true,
+    "default_transport": "auto",
+    "manifest_sha256": "d695b1dc51a4c49df413a569e0519c6f55092648960d92c44ae2098878986a31",
+    "cache_limit_bytes": 33554432,
+    "doubao_environment_tested": false
   }
 }

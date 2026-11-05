@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 DEFAULT_URL = "https://fangmu-geo-knowledge.airy-duck-6432.chatgpt.site/api/mcp"
-CLIENT_VERSION = "0.2.0"
+CLIENT_VERSION = "0.3.0"
 PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOLS = {"2025-11-25", "2025-06-18", "2025-03-26"}
 MAX_RESPONSE_BYTES = 5 * 1024 * 1024
@@ -25,9 +25,10 @@ MAX_REQUEST_BYTES = 128 * 1024
 
 
 class RemoteError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, http_status: int | None = None):
         super().__init__(message)
         self.code = code
+        self.http_status = http_status
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -92,7 +93,7 @@ class RemoteClient:
         except HTTPError as exc:
             code = exc.code
             exc.close()
-            raise RemoteError("http_error", f"远程服务返回 HTTP {code}；本次未完成知识库查询。") from None
+            raise RemoteError("http_error", f"远程服务返回 HTTP {code}；本次未完成知识库查询。", code) from None
         except (URLError, TimeoutError, OSError):
             raise RemoteError("network_error", "无法连接远程知识库或请求超时；本次未完成查询。") from None
         if len(body) > MAX_RESPONSE_BYTES:
@@ -162,6 +163,77 @@ class RemoteClient:
         return value
 
 
+class KnowledgeClient:
+    """MCP first, then a verified public snapshot, without changing knowledge owners."""
+
+    FALLBACK_ERRORS = {
+        "http_error", "network_error", "invalid_response", "invalid_handshake",
+        "invalid_notification_response", "invalid_tool_result", "tool_error",
+    }
+
+    def __init__(self, url: str | None = None, timeout: float = 60,
+                 transport: str = "auto", cache_dir: str | Path | None = None):
+        if transport not in {"auto", "mcp", "github"}:
+            raise ValueError("transport 必须为 auto、mcp 或 github。")
+        self.url = validate_url(url or os.environ.get("GEO_MCP_URL") or DEFAULT_URL)
+        if not 1 <= timeout <= 120:
+            raise ValueError("超时必须在 1 至 120 秒之间。")
+        self.timeout = timeout
+        self.transport = transport
+        self.cache_dir = cache_dir
+        self.auto_fallback = transport == "auto" and self.url == DEFAULT_URL.rstrip("/")
+
+    @staticmethod
+    def failure(code: str, message: str, transport: dict) -> dict:
+        return {"status": "unavailable", "error_code": code, "message": message,
+                "answer_markdown": "", "citations": [],
+                "knowledge_lookup_completed": False, "transport": transport}
+
+    def snapshot(self, name: str, arguments: dict, reason: dict | None = None) -> dict:
+        info = {"requested": self.transport, "used": "github_snapshot",
+                "mcp_connected": False, "fallback_reason": reason,
+                "attempted": ["mcp", "github_snapshot"] if reason else ["github_snapshot"]}
+        try:
+            from geo_snapshot import SnapshotClient, SnapshotError
+        except ImportError:
+            return self.failure("fallback_runtime_missing", "缺少配套 GitHub 快照查询脚本，请完整更新 Skill。",
+                                {**info, "used": None})
+        try:
+            result = SnapshotClient(timeout=self.timeout, cache_dir=self.cache_dir).call(name, arguments)
+        except SnapshotError as exc:
+            return self.failure(exc.code, str(exc), {**info, "used": None,
+                                "snapshot_error": {"code": exc.code, "message": str(exc)}})
+        if not isinstance(result, dict):
+            return self.failure("invalid_snapshot_result", "快照没有返回有效证据对象。", {**info, "used": None})
+        return {**result, "transport": info,
+                "knowledge_lookup_completed": result.get("status") not in {"error", "unavailable", "not_found"}}
+
+    def call(self, name: str, arguments: dict) -> dict:
+        if self.transport == "github":
+            return self.snapshot(name, arguments)
+        info = {"requested": self.transport, "used": "mcp", "mcp_connected": True,
+                "attempted": ["mcp"]}
+        try:
+            result = RemoteClient(self.url, min(self.timeout, 12) if self.auto_fallback else self.timeout).call(name, arguments)
+        except RemoteError as exc:
+            reason = {"code": exc.code, "message": str(exc)}
+            if exc.http_status is not None:
+                reason["http_status"] = exc.http_status
+            if self.auto_fallback and exc.code in self.FALLBACK_ERRORS:
+                return self.snapshot(name, arguments, reason)
+            info.update(used=None, mcp_connected=False, fallback_reason=reason)
+            if self.transport == "auto" and not self.auto_fallback:
+                info["fallback_disabled_reason"] = "自定义 MCP 地址失败时，不自动改查维护者的另一个知识库；可显式选择 --transport github。"
+            return self.failure(exc.code, str(exc), info)
+        if result.get("status") == "unavailable" and self.auto_fallback:
+            return self.snapshot(name, arguments, {
+                "code": result.get("error_code", "mcp_tool_unavailable"),
+                "message": result.get("message", "MCP 没有完成资料查询。"),
+            })
+        return {**result, "transport": info,
+                "knowledge_lookup_completed": result.get("status") not in {"error", "unavailable", "not_found"}}
+
+
 def _object_file(path: str, max_bytes: int = MAX_REQUEST_BYTES) -> dict:
     value = Path(path)
     if value.stat().st_size > max_bytes:
@@ -176,6 +248,9 @@ def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="免登录查询共享 GEO 知识库，无需导入资料或安装 MCP SDK。")
     parser.add_argument("--url", help="替代远程 MCP 地址；默认使用维护者公开服务")
     parser.add_argument("--timeout", type=float, default=60)
+    parser.add_argument("--transport", choices=("auto", "mcp", "github"), default="auto",
+                        help="auto 优先 MCP，默认服务不可用时查询已校验的 GitHub 快照；github 直接使用备用通道")
+    parser.add_argument("--cache-dir", help="快照自动缓存目录；无需手动导入资料")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("status", "browse", "mcp-config"):
         commands.add_parser(name)
@@ -239,7 +314,7 @@ def execute(args: argparse.Namespace) -> dict:
             values["end_line"] = args.end_line
     elif args.command == "check":
         values["bundle"] = _object_file(args.bundle_file)
-    return RemoteClient(args.url, args.timeout).call(names[args.command], values)
+    return KnowledgeClient(args.url, args.timeout, args.transport, args.cache_dir).call(names[args.command], values)
 
 
 def main(argv: list[str] | None = None) -> int:

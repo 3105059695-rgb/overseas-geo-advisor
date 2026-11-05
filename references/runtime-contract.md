@@ -1,10 +1,32 @@
-# v0.2 实现范围与接口
+# v0.3 实现范围与接口
 
 ## 组成与来源
 
 用户的 AI 是讲解者，共享远程工具提供词法检索、不可变版本原文和引用结构检查。服务器不调用付费生成模型，不进行向量检索或独立事实审核。实测发布状态见 README；真实工具响应才是查询完成的依据。
 
 普通用户无需本地资料。维护者更新源资料后需重新导出和发布云端快照，不是自动实时同步。原文保留版本与行号，历史回读不能静默改用新版本。
+
+v0.3 的客户端增加 GitHub 快照通道，远程 MCP 本身可以继续报告 v0.2.0。备用模式在使用者的脚本执行环境中检索按需下载的公开索引，并读取不可变原文；不依靠模型记忆，也不要求用户事先准备资料。
+
+## 通道选择与报告
+
+CLI 参数 `--transport auto|mcp|github` 放在子命令之前，例如 `geo.py --remote --transport github ask --question "海外信源怎么分？"`。
+
+`auto` 先尝试 MCP；内置默认地址发生连接错误、HTTP 403、超时、拦截页等传输故障时使用 GitHub 快照。默认 MCP 单次探测超时最多 12 秒。若 `--url` 或 `GEO_MCP_URL` 指向不同地址，不自动切换到维护者知识库；显式 `github` 才选择维护者快照。`mcp` 禁止切换。有效的空结果、参数错误、资料版本不存在或引用检查阻断不能触发换库。两个通道都失败，返回失败，不能借助模型记忆补出答案。
+
+结果包含 `transport`：
+
+```json
+{
+  "used": "github_snapshot",
+  "mcp_connected": false,
+  "fallback_reason": {"code": "http_error", "message": "MCP 请求失败的实际原因"}
+}
+```
+
+`fallback_reason` 是自动切换时的记录，手动选择 `github` 不代表曾尝试连接 MCP。`transport.used=mcp` 与 `github_snapshot` 必须如实区分。通道状态不等于证据充分：仍要检查业务结果中的 `status`、`gaps` 和引用。
+
+备用通道的数据 commit 固定为本版发布值（当前为 `c548b2ef186d75e8119ce23cda55f6fe87dbae0b`）。通过清单哈希验证索引与文档，原文另按 `source_version` 校验文本和行数。按需缓存最多 32 MiB，不克隆全量数据分支，不创建本地 SQLite 或导入向导。完整性失败不能通过换版本静默掩盖。
 
 ## 远程工具
 
@@ -50,7 +72,7 @@ CLI 使用 `geo.py --remote check --bundle-file <UTF8 JSON路径>`。有限来�
 
 源资料默认只是候选线索。AI 阅读、核对翻译或摘录不等于独立验证效果。同源归组是程序规则结果，不是人工独立性审计；文件数不说明图片、评论、全文翻译和日期都完整核验。
 
-引用保留 `document_id`、`source_version`、`line_start`、`line_end` 和真实链接。优先用公开 `reading_url` 回读，不要求外部用户访问维护者本机或私人飞书页。
+引用保留 `document_id`、`source_version`、`line_start`、`line_end` 和真实链接。MCP 模式用公开 `reading_url`；GitHub 模式返回快照链接和原始来源，不依赖被阻断的 MCP 域名。JSON 文件的预览行号与其中正文字段的行号不同，不能虚构 GitHub `#L...` 锚点来冒充正文定位。不要求外部用户访问维护者本机或私人飞书页。
 
 ## 本地模式差异
 
